@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Grive
+Comment=Google Drive Client Indicator
+Path=/usr/share/grive/
+Exec=/usr/share/grive/grive
+Icon=/usr/share/grive/icons/app.png
+Categories=Utility;GTK
+Terminal=false

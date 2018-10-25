@@ -1,0 +1,10 @@
+Package: python3-grive
+Version: 0.1
+Architecture: all
+Maintainer: John Smith
+Installed-Size: 0
+Depends: python3, python3-gi, python3-pyinotify, python3-googleapi, python3-oauth2client, gir1.2-appindicator3-0.1, dconf-gsettings-backend | gsettings-backend
+Section: net
+Priority: optional
+Homepage: https://github.com/john4smith/python-grive
+Description: Grive (Python) for Google-Drive

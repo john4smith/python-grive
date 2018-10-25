@@ -1,0 +1,1547 @@
+#!/usr/bin/python3
+# Author: https://github.com/john4smith
+#
+# Grive
+#
+### BEGIN LICENSE
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License version 3, as published
+# by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranties of
+# MERCHANTABILITY, SATISFACTORY QUALITY, or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program.  If not, see <http://www.gnu.org/licenses/>.
+### END LICENSE
+
+import logging, gi, os, io, sys, threading, subprocess, shutil, time, datetime, pyinotify, fcntl, json, re, hashlib, traceback
+gi.require_version('Gtk', '3.0')
+gi.require_version('AppIndicator3', '0.1')
+from gi.repository import Gtk, Gio, GLib, AppIndicator3, GdkPixbuf
+# Google API/OAuth2
+from apiclient.discovery import build
+from apiclient.http import MediaFileUpload, MediaIoBaseDownload
+from oauth2client.client import OAuth2WebServerFlow as flow_setup
+from oauth2client.client import OAuth2Credentials as flow_load
+from oauth2client.client import HttpAccessTokenRefreshError as flow_token_error
+from oauth2client.file import Storage as flow_storage
+from oauth2client.tools import run_flow as flow_auth
+from httplib2 import ServerNotFoundError as flow_server_offline
+
+# https://developers.google.com/drive/api/v3/about-sdk
+# https://developers.google.com/drive/api/v3/reference
+# https://developers.google.com/drive/api/v3/mime-types
+# https://developers.google.com/drive/api/v3/manage-downloads
+GOOGLE_MIME_TYPES = {
+    'application/vnd.google-apps.document': ['application/vnd.oasis.opendocument.text', '.odt'],
+    'application/vnd.google-apps.spreadsheet': ['application/x-vnd.oasis.opendocument.spreadsheet', '.ods'],
+    'application/vnd.google-apps.presentation': ['application/vnd.oasis.opendocument.presentation', '.odp'],
+    'application/vnd.google-apps.drawing': ['image/svg+xml', '.svg']
+}
+
+class EventHandler(pyinotify.ProcessEvent):
+    def process_IN_CREATE(self, event):
+        if AutoSyncState == True:
+            fullname = os.path.join(event.path, event.name)
+            if valid_fullpath(fullname) and not check_running_thread('sync'):
+                logging.debug('Create: %s' %  fullname)
+                eventLoop()
+
+    def process_IN_DELETE(self, event):
+        if AutoSyncState == True:
+            fullname = os.path.join(event.path, event.name)
+            if valid_fullpath(fullname) and not check_running_thread('sync'):
+                logging.debug('Remove: %s' %  fullname)
+                eventLoop()
+
+    def process_IN_MODIFY(self, event):
+        if AutoSyncState == True:
+            fullname = os.path.join(event.path, event.name)
+            if valid_fullpath(fullname) and not check_running_thread('sync'):
+                logging.debug('Modify: %s' %  fullname)
+                eventLoop()
+
+    def process_IN_MOVED_FROM(self, event):
+        if AutoSyncState == True:
+            fullname = os.path.join(event.path, event.name)
+            if valid_fullpath(fullname) and not check_running_thread('sync'):
+                logging.debug('Move From: %s' %  fullname)
+                eventLoop()
+
+    def process_IN_MOVED_TO(self, event):
+        if AutoSyncState == True:
+            fullname = os.path.join(event.path, event.name)
+            if valid_fullpath(fullname) and not check_running_thread('sync'):
+                logging.debug('Move To: %s' %  fullname)
+                eventLoop()
+
+class GoogleCredentials(object):
+    def __init__(self, config_file, client_file):
+        self.config_file = config_file
+        self.client_file = client_file
+        self.config = {}
+        self.client = {}
+
+    def _load_client_file(self):
+        try:
+            self.client = json.loads(open(self.client_file).read())
+        except:
+            logging.warning('Failed to load: ' + self.client_file)
+
+    def _load_credentials(self):
+        try:
+            self.config = json.loads(open(self.config_file).read())
+        except:
+            logging.warning('Failed to load: ' + self.config_file)
+
+    def _save_credentials(self):
+        fd = open(self.config_file, 'w')
+        fd.write(json.dumps(self.config))
+
+    def _get_credentials(self):
+        self._load_client_file()
+        # grive client id and secret
+        CLIENT_ID = self.client.get('client_id')
+        if CLIENT_ID == None:
+            raise Exception('ERROR: Can not load "client_id"')
+        CLIENT_SECRET = self.client.get('client_secret')
+        if CLIENT_SECRET == None:
+            raise Exception('ERROR: Can not load "client_secret"')
+        OAUTH_SCOPE = 'https://www.googleapis.com/auth/drive'
+        flow = flow_setup(CLIENT_ID, CLIENT_SECRET, OAUTH_SCOPE)
+        store = flow_storage(self.config_file)
+        credentials = flow_auth(flow=flow, storage=store)
+        return credentials
+
+    def get_service(self):
+        self._load_credentials()
+        credentials_json = self.config.get('credentials')
+        if credentials_json == None:
+            logging.warning('Credentials not found, begin the Oauth process...')
+            credentials = self._get_credentials()
+            self.config = {}
+            self.config['credentials'] = credentials.to_json()
+            self._save_credentials()
+            os.chmod(self.config_file, 0o600)
+        else:
+            credentials = flow_load.from_json(credentials_json)
+        service = build('drive', 'v3', credentials=credentials, cache_discovery=False)
+        return service
+
+def setup_google_service_thread():
+    global cloudService
+    global cloudServiceSetup
+    global timerServiceSetup
+    try:
+        cloudService = GoogleCredentials(cloudConfigFile, cloudClientFile).get_service()
+        update_cloud_info()
+        cloudServiceSetup = True
+        # Stop timerService
+        timerServiceSetup = 0
+    except flow_token_error:
+        menu_cloud_info.set_label('Info: Get Cloud Service...')
+        logging.warning('HttpAccessTokenRefreshError, reauth...')
+        sendmessage(cloudName + ' (OAuth2)', 'Failed, set up Service again...')
+        delete_local_erase(cloudConfigFile)
+        cloudServiceSetup = False
+    except flow_server_offline:
+        menu_cloud_info.set_label('Info: Are you offline?...')
+        logging.debug('Setup Service failed, are you offline?...')
+        cloudServiceSetup = False
+    except Exception:
+        debugPrint(traceback.format_exc())
+        cloudServiceSetup = False
+
+def setup_google_service_helper():
+    # icon set up with thread, not working!
+    if timerServiceSetup == 0:
+        ind.set_icon_full(icon_path, 'finished')
+        # Stop timerService
+        return False
+    # check last thread
+    if check_running_thread('init'):
+        # Try it next time...
+        return True
+    # start a new Thread
+    ind.set_icon_full(icon_path_failed, 'failed')
+    t = threading.Thread(name='init', target=setup_google_service_thread)
+    t.start()
+    return True
+
+def setup_google_service():
+    global cloudServiceSetup
+    global timerServiceSetup
+    if timerServiceSetup == 0:
+        logging.debug('Start to set up Service...')
+        cloudServiceSetup = False
+        timerServiceSetup = GLib.timeout_add_seconds(5, setup_google_service_helper)
+
+def humanbytes(B):
+   # Return the given bytes as a human friendly KB, MB, GB, or TB string
+   B = float(B)
+   KB = float(1024)
+   MB = float(KB ** 2) # 1,048,576
+   GB = float(KB ** 3) # 1,073,741,824
+   TB = float(KB ** 4) # 1,099,511,627,776
+
+   if B < KB:
+      return '{0} {1}'.format(B,'Bytes' if 0 == B > 1 else 'Byte')
+   elif KB <= B < MB:
+      return '{0:.2f} KB'.format(B/KB)
+   elif MB <= B < GB:
+      return '{0:.2f} MB'.format(B/MB)
+   elif GB <= B < TB:
+      return '{0:.2f} GB'.format(B/GB)
+   elif TB <= B:
+      return '{0:.2f} TB'.format(B/TB)
+
+def valid_filename(filename):
+    filename = os.path.basename(filename)
+    return not any((filename.startswith('.'),    # hidden file
+                    filename.startswith('@'),    # temporary file
+                    filename.endswith('~'),      # temporary file
+                    filename.endswith('.pyc'),   # generated Python file
+                    filename.endswith('.pyo')))  # generated Python file
+
+def valid_fullpath(fullname):
+    for name in fullname.split('/'):
+        if not valid_filename(name):
+            return False
+    return True
+
+def walk_tree_list_remote(items, parent_id, name):
+    global tree_list
+    for item in items:
+        if item['parents'][0] == parent_id:
+            if valid_filename(item['name']):
+                item_tmp = {}
+                item_tmp['id'] = item['id']
+                item_tmp['mimeType'] = item['mimeType']
+                item_tmp['parent'] = parent_id
+                # fix name for exporting media
+                if item['mimeType'] in GOOGLE_MIME_TYPES.keys():
+                    item_tmp['name'] = name + item['name'] + GOOGLE_MIME_TYPES[item['mimeType']][1]
+                else:
+                    item_tmp['name'] = name + item['name']
+                # check for dubbel names
+                if dict_search_name(tree_list, item_tmp['name']) == None:
+                    if item['mimeType'] == 'application/vnd.google-apps.folder': # if folder
+                        tree_list.append(item_tmp)
+                        walk_tree_list_remote(items, item['id'], item_tmp['name'] + '/')
+                    elif not item['mimeType'].startswith('application/vnd.google-apps.'):
+                        item_tmp['md5Checksum'] = item['md5Checksum']
+                        item_tmp['modifiedEpoch'] = time.mktime(time.strptime(item['modifiedTime'], '%Y-%m-%dT%H:%M:%S.%fZ'))
+                        tree_list.append(item_tmp)
+                    elif item['mimeType'] in GOOGLE_MIME_TYPES.keys():
+                        item_tmp['modifiedEpoch'] = time.mktime(time.strptime(item['modifiedTime'], '%Y-%m-%dT%H:%M:%S.%fZ'))
+                        tree_list.append(item_tmp)
+                    else:
+                        logging.debug('Skip unsupported Google File...')
+                else:
+                    logging.debug('Skipp dubbel adding item "' + item_tmp['name'] + '" to remote List...')
+                    sendmessage(cloudName + ' (WARNING, DUBBELD ITEM!)', 'Skipping: ' + item_tmp['name'])
+
+def get_tree_list_remote():
+    global tree_list
+    root_id = None
+    items = []
+    tree_list = []
+    try:
+        results = cloudService.files().list(q='"root" in parents and trashed = false', spaces='drive', pageSize=1, pageToken=None, fields="files(parents), incompleteSearch").execute()
+        if results.get('incompleteSearch') == True:
+            raise Exception('Error: Listing remote Files (Incomplete Search)...')
+        for item in results.get('files'):
+            root_id = item['parents'][0]
+        if root_id == None:
+            logging.debug('No remote Files...')
+            return tree_list
+    except:
+        raise Exception('Error: Listing remote Files...')
+    page_token = ''
+    while page_token is not None:
+        try:
+            param = {}
+            results = cloudService.files().list(q='trashed = false', spaces='drive', pageSize=1000, pageToken=page_token, fields="nextPageToken, files(id, name, modifiedTime, mimeType, md5Checksum, parents), incompleteSearch").execute()
+            if results.get('incompleteSearch') == True:
+                raise Exception('Error: Listing remote Files (Incomplete Search)...')
+            items.extend(results.get('files'))
+            page_token = results.get('nextPageToken')
+        except:
+            raise Exception('Error: Listing remote Files...')
+    walk_tree_list_remote(items, root_id, '/')
+    return tree_list
+
+def get_tree_list_local():
+    tree_list_local = []
+    if os.path.exists(os.path.join(cloudFolder)):
+        foldername = os.path.join(cloudFolder)
+        if foldername.endswith('/'):
+            foldername = foldername[:-1]
+        for root, dirs, files in os.walk(foldername, topdown = True):
+            if valid_fullpath(root):
+                for name in files:
+                    if valid_filename(name):
+                        item = {}
+                        item['name'] = re.sub(r'^' + foldername, '', root + '/' + name)
+                        item['modifiedEpoch'] = time.mktime(time.localtime(os.path.getmtime(root  + '/' + name)))
+                        item['md5Checksum'] = hashlib.md5(open(os.path.join(root + '/' + name), 'rb').read()).hexdigest()
+                        tree_list_local.append(item)
+                for name in dirs:
+                    if valid_filename(name):
+                        item = {}
+                        item['name'] = re.sub(r'^' + foldername, '', root + '/' + name)
+                        item['mimeType'] = 'application/vnd.google-apps.folder'
+                        tree_list_local.append(item)
+        return tree_list_local
+    else:
+        raise Exception('Error: Listing local Files...')
+
+def get_tree_list_trash():
+    tree_list_trash = []
+    if os.path.exists(os.path.join(cloudTrashFolder)):
+        foldername = os.path.join(cloudTrashFolder)
+        if foldername.endswith('/'):
+            foldername = foldername[:-1]
+        for root, dirs, files in os.walk(foldername, topdown = True):
+            for name in files:
+                item = {}
+                item['name'] = re.sub(r'^' + foldername, '', root + '/' + name)
+                item['md5Checksum'] = hashlib.md5(open(os.path.join(root + '/' + name), 'rb').read()).hexdigest()
+                tree_list_trash.append(item)
+    return tree_list_trash
+
+def write_items_json_file(items, file):
+    f = open(os.path.join(file), 'w')
+    f.write(json.dumps(items))
+    f.close()
+
+def read_items_json_file(file):
+    with open(os.path.join(file)) as f:
+        items = json.loads(f.read())
+    f.close()
+    return items
+
+def create_local_folder(foldername):
+    if not os.path.exists(os.path.join(foldername)):
+      os.makedirs(os.path.join(foldername))
+
+def create_remote_folder(foldername, parent_id):
+    body = {'name': foldername, 'parents': [ parent_id ], 'mimeType': 'application/vnd.google-apps.folder'}
+    request = cloudService.files().create(body=body, fields="name, id, mimeType, modifiedTime").execute()
+    return request
+
+def delete_local_trash(time, filename):
+    folderTrashTime = os.path.join(cloudTrashFolder, time)
+    filenameLocal = os.path.join(cloudFolder + filename)
+    filenameTrash = os.path.join(folderTrashTime + filename)
+    create_local_folder(os.path.dirname(filenameTrash))
+    number = 0
+    while True:
+        if os.path.exists(filenameTrash):
+            number += 1
+            filenameTrash = os.path.join(folderTrashTime + filename + '_' + number)
+        else:
+            logging.log(40, 'Trash: Move "' + filenameLocal + '" to "' + filenameTrash  + '"')
+            os.rename(filenameLocal, filenameTrash)
+            return
+
+def delete_local_erase(filename):
+    if os.path.isfile(os.path.join(filename)):
+        os.remove(os.path.join(filename))
+    elif os.path.isdir(os.path.join(filename)):
+        shutil.rmtree(os.path.join(filename), ignore_errors=True)
+
+def delete_remote_trash(file_id):
+    body = {'trashed': 'true'}
+    request = cloudService.files().update(fileId=file_id, body=body).execute()
+    return request
+
+def delete_remote_erase(file_id):
+    try:
+        cloudService.files().delete(fileId=file_id).execute()
+    except:
+        logging.warning('Delete remote File failed!')
+
+def empty_remote_trash(button):
+    try:
+        logging.debug('Empty remote Trash...')
+        cloudService.files().emptyTrash().execute()
+        ind.set_icon_full(icon_path, 'finished')
+    except:
+        logging.warning('Empty remote Trash, failed!')
+        ind.set_icon_full(icon_path_failed, 'failed')
+
+def upload_file(filename, parent_id):
+    modifiedTime = datetime.datetime.fromtimestamp(os.path.getmtime(os.path.join(filename))).isoformat() + 'Z'
+    body = {'name': os.path.basename(filename), 'modifiedTime': modifiedTime, 'parents': [ parent_id ]}
+    # check if the file is bigger then 5MB (1024*1024*5)
+    if os.path.getsize(os.path.join(filename)) >= 5242880:
+        media_body = MediaFileUpload(filename=os.path.join(filename), resumable=True)
+    else:
+        media_body = MediaFileUpload(filename=os.path.join(filename))
+    request = cloudService.files().create(body=body, media_body=media_body, fields="name, id, modifiedTime, mimeType, md5Checksum").execute()
+    if request['md5Checksum'] != hashlib.md5(open(os.path.join(filename), 'rb').read()).hexdigest():
+        logging.warning('Upload File (MD5SUM) failed!')
+        delete_remote_erase(request['id'])
+        return None
+    return request
+
+def upload_file_replace(filename, item_id):
+    modifiedTime = datetime.datetime.fromtimestamp(os.path.getmtime(os.path.join(filename))).isoformat() + 'Z'
+    body = {'name': os.path.basename(filename), 'modifiedTime': modifiedTime}
+    # check if the file is bigger then 5MB (1024*1024*5)
+    if os.path.getsize(os.path.join(filename)) >= 5242880:
+        media_body = MediaFileUpload(filename=os.path.join(filename), resumable=True)
+    else:
+        media_body = MediaFileUpload(filename=os.path.join(filename))
+    request = cloudService.files().update(fileId=item_id, body=body, media_body=media_body, fields="name, id, modifiedTime, mimeType, md5Checksum").execute()
+    if request['md5Checksum'] != hashlib.md5(open(os.path.join(filename), 'rb').read()).hexdigest():
+        logging.warning('Upload File (MD5SUM) failed!')
+        request_trash = delete_remote_trash(request['id'])
+        if request_trash == None:
+            delete_remote_erase(request['id'])
+        return None
+    return request
+
+def download_file_export(filename, file_id):
+    # Export only supports Google Docs.
+    request = cloudService.files().get(fileId=file_id, fields="name, id, modifiedTime, mimeType").execute()
+    if request['mimeType'] in GOOGLE_MIME_TYPES.keys():
+        mimeTypeExport = GOOGLE_MIME_TYPES[request['mimeType']][0]
+        # Try to export it (can not export empty files and max 10MB [1024*1024*10]!)
+        try:
+            request_media = cloudService.files().export_media(fileId=file_id, mimeType=mimeTypeExport)
+            downloader = MediaIoBaseDownload(io.FileIO(os.path.join(filename), 'wb'), request_media)
+            done = False
+            while done is False:
+                status, done = downloader.next_chunk()
+                logging.debug('Download %d%%' % int(status.progress() * 100))
+        except:
+            # only touch the file (export failed!)
+            logging.log(40, 'Fail: Export Google File "' + filename + '" (make a dummy file)...')
+            open(os.path.join(filename), 'a').close()
+        # Update Modified Time for the local File
+        file_epoche = time.mktime(time.strptime(request['modifiedTime'], '%Y-%m-%dT%H:%M:%S.%fZ'))
+        os.utime(filename, (file_epoche, file_epoche))
+        return request
+    else:
+        logging.warning('Error: Failed to export Google File!')
+        return None
+
+def download_file(filename, file_id):
+    request = cloudService.files().get(fileId=file_id, fields="name, id, modifiedTime, mimeType, md5Checksum, size").execute()
+    # check if it is downloadable (can not download empty files!)
+    if int(request['size']) > 0:
+        request_media = cloudService.files().get_media(fileId=file_id)
+        downloader = MediaIoBaseDownload(io.FileIO(os.path.join(filename), 'wb'), request_media)
+        done = False
+        while done is False:
+            status, done = downloader.next_chunk()
+            logging.debug('Download %d%%' % int(status.progress() * 100))
+    else:
+        # only touch the file
+        open(os.path.join(filename), 'a').close()
+    if request['md5Checksum'] != hashlib.md5(open(os.path.join(filename), 'rb').read()).hexdigest():
+        logging.warning('Error: Download File (MD5SUM) failed!')
+        return None
+    # Update Modified Time for the local File
+    file_epoche = time.mktime(time.strptime(request['modifiedTime'], '%Y-%m-%dT%H:%M:%S.%fZ'))
+    os.utime(filename, (file_epoche, file_epoche))
+    return request
+
+def remote_copy_file(file_id, filename, parent):
+    body = {'name': os.path.basename(filename), 'parents': [parent]}
+    request = cloudService.files().copy(fileId=file_id, body=body, fields="name, id, modifiedTime, mimeType, md5Checksum").execute()
+    return request
+
+def remote_move_file(file_id, filename, modifiedEpoch, parent_add, parend_remove):
+    modifiedTime = datetime.datetime.fromtimestamp(modifiedEpoch).isoformat() + 'Z'
+    body = {'name': os.path.basename(filename), 'modifiedTime': modifiedTime}
+    if parent_add == parend_remove:
+        request = cloudService.files().update(fileId=file_id, body=body, fields="name, id, modifiedTime, mimeType, md5Checksum").execute()
+    else:
+        request = cloudService.files().update(fileId=file_id, body=body, addParents=parent_add, removeParents=parend_remove, fields="name, id, modifiedTime, mimeType, md5Checksum").execute()
+    return request
+
+def get_remote_info_by_id(id):
+    return cloudService.files().get(fileId=id, fields="name, modifiedTime, mimeType, md5Checksum, parents").execute()
+
+def check_remote_trashed_by_id(file_id):
+    # Search for a File in Google Drive by ID
+    request = cloudService.files().get(fileId=file_id, fields="trashed").execute()
+    return request.get('trashed')
+
+def update_cloud_info():
+    cloudInfo = get_drive_info()
+    cloudLabel = cloudInfo['user']['displayName'] + ': ' + humanbytes(cloudInfo['storageQuota']['usage']) + ' / ' + humanbytes(cloudInfo['storageQuota']['limit'])
+    menu_cloud_info.set_label(cloudLabel)
+    logging.debug('CloudInfo: [ ' + cloudLabel + ' ]')
+
+def check_running_thread(name):
+    # check if a thread is running
+    for t in threading.enumerate():
+        if t.getName() == name and hasattr(t, 'isAlive'):
+            try:
+                if t.isAlive():
+                    return True
+            except:
+                logging.warning('Failed to check thread: ' + name)
+                return False
+    return False
+
+def join_running_thread(name):
+    # join a thread is running
+    for t in threading.enumerate():
+        if t.getName() == name and hasattr(t, 'join'):
+            try:
+                t.join()
+            except:
+                logging.warning('Failed to join thread: ' + name)
+
+def get_drive_info():
+    request = cloudService.about().get(fields="kind,maxUploadSize,user(displayName,emailAddress), storageQuota(usage,limit)").execute()
+    return request
+
+def compare_lists(list_static, list_remote, list_local):
+    # build items_all and items_return
+    items_all = []
+    items_return = []
+    # append all items from list_remote to items_all
+    for item in list_remote:
+        item_tmp = {}
+        item_tmp = item
+        item_tmp['found_in_remote'] = True
+        items_all.append(item_tmp)
+    # append all items from list_static to items_all
+    for item in list_static:
+        item_tmp = {}
+        item_search = dict_search_name(items_all, item['name'])
+        if item_search != None:
+            item_tmp = item_search
+            item_tmp['found_in_static'] = True
+            items_all.remove(item_search)
+            items_all.append(item_tmp)
+        else:
+            item_tmp = item
+            item_tmp['found_in_static'] = True
+            items_all.append(item_tmp)
+    # append all items from list_local to items_all
+    for item in list_local:
+        item_tmp = {}
+        item_search = dict_search_name(items_all, item['name'])
+        if item_search != None:
+            item_tmp = item_search
+            item_tmp['found_in_local'] = True
+            items_all.remove(item_search)
+            items_all.append(item_tmp)
+        else:
+            item_tmp = item
+            item_tmp['found_in_local'] = True
+            items_all.append(item_tmp)
+    # build items_return with todo for all items in items_all
+    for item in items_all:
+        if item.get('found_in_static') != True and item.get('found_in_remote') == True and item.get('found_in_local') != True:
+            item['todo'] = 'DOWNLOAD'
+        if item.get('found_in_static') != True and item.get('found_in_remote') != True and item.get('found_in_local') == True:
+            item['todo'] = 'UPLOAD'
+        if item.get('found_in_static') == True and item.get('found_in_remote') == True and item.get('found_in_local') != True:
+            item['todo'] = 'REMOVE_REMOTE'
+        if item.get('found_in_static') == True and item.get('found_in_remote') != True and item.get('found_in_local') == True:
+            item['todo'] = 'REMOVE_LOCAL'
+        if item.get('found_in_static') != True and item.get('found_in_remote') == True and item.get('found_in_local') == True:
+            item['todo'] = 'CHECK_DB_ERROR'
+        if item.get('found_in_static') == True and item.get('found_in_remote') == True and item.get('found_in_local') == True:
+            item['todo'] = 'CHECK_FILE'
+        if item.get('todo') != None:
+            items_return.append(item)
+    # return a todo list
+    return items_return
+
+def dict_search_name(list, name):
+    for item in list:
+        if item['name'] == name:
+            return item
+    return None
+
+def dict_search_name_by_todo(list, name, todo):
+    for item in list:
+        if item['name'] == name and item['todo'] == todo:
+            return item
+    return None
+
+def dict_search_checksum(list, md5Checksum):
+    for item in list:
+        if item.get('md5Checksum') == md5Checksum:
+            return item
+    return None
+
+def check_save_item(item):
+    item_new = {}
+    item_new['id'] = item['id']
+    item_new['name'] = item['name']
+    item_new['mimeType'] = item['mimeType']
+    # check if it is a Folder
+    if item_new['mimeType'] == 'application/vnd.google-apps.folder':
+        return item_new
+    # check if it is a Google Export File
+    elif item_new['mimeType'] in GOOGLE_MIME_TYPES.keys():
+        item_new['modifiedEpoch'] = item['modifiedEpoch']
+        return item_new
+    else:
+        item_new['modifiedEpoch'] = item['modifiedEpoch']
+        item_new['md5Checksum'] = item['md5Checksum']
+        return item_new
+
+def check_load_item(item):
+    # check ID and Name
+    if item.get('id') != None and item.get('name') != None:
+        # check if it is a Folder
+        if item.get('mimeType') == 'application/vnd.google-apps.folder':
+            return True
+        # check if it is a Google Export File
+        if item.get('mimeType') in GOOGLE_MIME_TYPES.keys():
+            if item.get('modifiedEpoch') != None:
+                return True
+        # check not Google Export Files
+        if item.get('modifiedEpoch') != None and item.get('md5Checksum') != None:
+            return True
+    # Bad File!
+    return False
+
+def syncThread():
+    global cloudServiceSetup
+    global timerServiceSetup
+    global threadExitCodeSync
+    run_loop = True
+    threadExitCodeSync = False
+    sync_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    try:
+        list_static = read_items_json_file(cloudStatusFile)
+        # check every item in list_static
+        for item in list_static:
+            if check_load_item(item) != True:
+                logging.warning('Failed to load Status File (database is broken)...')
+                sendmessage(cloudName + ' (synchronizing)', 'Failed to load Status File (database is broken)...')
+                return
+    except:
+        logging.warning('Failed to load Status File...')
+        sendmessage(cloudName + ' (synchronizing)', 'Failed to load Status File...')
+        return
+    while run_loop:
+        try:
+            logging.debug('Start Sync...')
+            list_remote = get_tree_list_remote()
+            list_local = get_tree_list_local()
+            list_trash = get_tree_list_trash()
+            list_todo = compare_lists(list_static, list_remote, list_local)
+            if list_todo:
+                # create a list for remove later items from list_todo, befor run all todo_remove
+                remove_todo_files = []
+                # first, run all todo's for Folders (but remove at the end!)
+                for item in list_todo:
+                    if item.get('mimeType') == 'application/vnd.google-apps.folder':
+                        if item['todo'] == 'CHECK_DB_ERROR':
+                            try:
+                                # Try to remove item from list_static
+                                item_old = dict_search_name(list_static, item['name'])
+                                if item_old:
+                                    list_static.remove(item_old)
+                                if not os.path.exists(os.path.join(cloudFolder + item['name'])):
+                                    logging.log(40, 'Fix DB: Create local Folder: ' + item['name'])
+                                    sendmessage(cloudName + ' (Handle DB Error, create local Folder!)', item['name'])
+                                    create_local_folder(cloudFolder + item['name'])
+                                else:
+                                    # do not run sendmessage, can crash the pc!
+                                    logging.log(40, 'Fix DB: Add Dir to DB: ' + item['name'])
+                                item_remote = dict_search_name(list_remote, item['name'])
+                                list_static.append(check_save_item(item_remote))
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                delete_local_trash(sync_time, item['name'])
+                                logging.warning('Create local Dir (replace) failed!')
+                                return
+                        if item['todo'] == 'DOWNLOAD':
+                            try:
+                                logging.log(40, 'Create (local/folder): ' + item['name'])
+                                sendmessage(cloudName + ' (create local Folder)', item['name'])
+                                create_local_folder(cloudFolder + item['name'])
+                                item_remote = dict_search_name(list_remote, item['name'])
+                                list_static.append(check_save_item(item_remote))
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                logging.warning('Create local Folder failed!')
+                                return
+                        if item['todo'] == 'UPLOAD':
+                            try:
+                                logging.log(40, 'Create (remote/folder): ' + item['name'])
+                                sendmessage(cloudName + ' (create remote Folder)', item['name'])
+                                # search for parend dir id
+                                parent_dir = os.path.dirname(item['name'])
+                                if parent_dir == '/':
+                                    parent_id = 'root'
+                                else:
+                                    parent_id = dict_search_name(list_static, parent_dir)['id']
+                                request = create_remote_folder(os.path.basename(item['name']), parent_id)
+                                if request != None:
+                                    item['id'] = request['id']
+                                    item['mimeType'] = request['mimeType']
+                                    list_static.append(check_save_item(item))
+                                else:
+                                    delete_local_erase(cloudFolder + item['name'])
+                                    logging.warning('Create remote Folder failed!')
+                                    return
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                logging.warning('Create remote Folder failed!')
+                                return
+                # first, run all todo's for Files (but remove at the end!)
+                for item in list_todo:
+                    if item.get('mimeType') != 'application/vnd.google-apps.folder':
+                        item_remote = dict_search_name(list_remote, item['name'])
+                        item_local = dict_search_name(list_local, item['name'])
+                        if item.get('mimeType') in GOOGLE_MIME_TYPES.keys():
+                            if item['todo'] == 'CHECK_FILE':
+                                item_static = dict_search_name(list_static, item['name'])
+                                logging.debug('Check (exported) File: ' + item['name'])
+                                if item_remote['id'] != item_static['id']:
+                                    item['todo'] = 'DOWNLOAD_REPLACE'
+                                if item_remote['modifiedEpoch'] != item_local['modifiedEpoch']:
+                                    item['todo'] = 'DOWNLOAD_REPLACE'
+                            if item['todo'] == 'CHECK_DB_ERROR':
+                                if item_remote['modifiedEpoch'] != item_local['modifiedEpoch']:
+                                    item['todo'] = 'DOWNLOAD_REPLACE'
+                                else:
+                                    # do not run sendmessage, can crash the pc!
+                                    logging.log(40, 'Fix DB: Add (exported) File to DB: ' + item['name'])
+                                    list_static.append(check_save_item(item_remote))
+                        else:
+                            if item['todo'] == 'CHECK_FILE':
+                                logging.debug('Check File: ' + item['name'])
+                                item_static = dict_search_name(list_static, item['name'])
+                                if item_remote['id'] != item_static['id']:
+                                    item['todo'] = 'DOWNLOAD_REPLACE'
+                                else:
+                                    if item_remote['md5Checksum'] != item_local['md5Checksum']:
+                                        if item_remote['modifiedEpoch'] > item_local['modifiedEpoch']:
+                                            item['todo'] = 'DOWNLOAD_REPLACE'
+                                        elif item_remote['modifiedEpoch'] < item_local['modifiedEpoch']:
+                                            item['todo'] = 'UPLOAD_REPLACE'
+                                    elif item_remote['modifiedEpoch'] != item_local['modifiedEpoch']:
+                                        try:
+                                            logging.log(40, 'Update (local) modified Time: ' + item['name'])
+                                            sendmessage(cloudName + ' (update modified Time for File)', item['name'])
+                                            os.utime(cloudFolder + item['name'], (item_remote['modifiedEpoch'], item_remote['modifiedEpoch']))
+                                        except Exception:
+                                            debugPrint(traceback.format_exc())
+                                            logging.warning('Update modified Time for File failed!')
+                                            return
+                            if item['todo'] == 'CHECK_DB_ERROR':
+                                if item_remote['md5Checksum'] != item_local['md5Checksum'] or item_remote['modifiedEpoch'] != item_local['modifiedEpoch']:
+                                    item['todo'] = 'DOWNLOAD_REPLACE'
+                                else:
+                                    # do not run sendmessage, can crash the pc!
+                                    logging.log(40, 'Fix DB: Add File to DB: ' + item['name'])
+                                    list_static.append(check_save_item(item_remote))
+                        # Dummy DOWNLOAD, for detect allready downloaded Files
+                        if item['todo'] == 'DOWNLOAD':
+                            try:
+                                if not item['mimeType'] in GOOGLE_MIME_TYPES.keys():
+                                    # Try to find a local File with the same MD5 (allready downloaded?)
+                                    item_search_local = dict_search_checksum(list_local, item_remote['md5Checksum'])
+                                    if item_search_local != None:
+                                        # try to find out if the file is moved?
+                                        item_search_remove = dict_search_name_by_todo(list_todo, item_search_local['name'], 'REMOVE_LOCAL')
+                                        if item_search_remove != None:
+                                            logging.log(40, 'Move (local): From "' + item_search_local['name'] + '" to "' + item['name'] + '"')
+                                            sendmessage(cloudName + ' (move/rename file)', item['name'])
+                                            shutil.move(cloudFolder + item_search_local['name'], cloudFolder + item['name'])
+                                            os.utime(cloudFolder + item['name'], (item_remote['modifiedEpoch'], item_remote['modifiedEpoch']))
+                                            copyfile_checksum = hashlib.md5(open(cloudFolder + item['name'], 'rb').read()).hexdigest()
+                                            if item_remote['md5Checksum'] == copyfile_checksum:
+                                                # remove later item_search_remove from list_todo
+                                                remove_todo_files.append(item_search_remove)
+                                                list_static.remove(dict_search_name(list_static, item_search_remove['name']))
+                                                list_static.append(check_save_item(item_remote))
+                                                # skip the real DOWNLOAD!
+                                                continue
+                                            else:
+                                                delete_local_trash(cloudFolder + item['name'])
+                                                logging.warning('Move File (try to download) failed!')
+                                        else:
+                                            logging.log(40, 'Copy (local): From "' + item_search_local['name'] + '" to "' + item['name'] + '"')
+                                            sendmessage(cloudName + ' (copy file)', item['name'])
+                                            shutil.copyfile(cloudFolder + item_search_local['name'], cloudFolder + item['name'])
+                                            os.utime(cloudFolder + item['name'], (item_remote['modifiedEpoch'], item_remote['modifiedEpoch']))
+                                            copyfile_checksum = hashlib.md5(open(cloudFolder + item['name'], 'rb').read()).hexdigest()
+                                            if item_remote['md5Checksum'] == copyfile_checksum:
+                                                list_static.append(check_save_item(item_remote))
+                                                # skip the real DOWNLOAD!
+                                                continue
+                                            else:
+                                                delete_local_erase(cloudFolder + item['name'])
+                                                logging.warning('Copy File (try to download) failed!')
+                                    # Try to find a local File in Trash with the same MD5 (allready downloaded?)
+                                    item_search_trash = dict_search_checksum(list_trash, item_remote['md5Checksum'])
+                                    if item_search_trash != None:
+                                        logging.log(40, 'Restore: From "' + item_search_trash['name'] + '" to "' + item['name'] + '"')
+                                        sendmessage(cloudName + ' (restore file)', item['name'])
+                                        shutil.move(cloudTrashFolder + item_search_trash['name'], cloudFolder + item['name'])
+                                        os.utime(cloudFolder + item['name'], (item_remote['modifiedEpoch'], item_remote['modifiedEpoch']))
+                                        copyfile_checksum = hashlib.md5(open(cloudFolder + item['name'], 'rb').read()).hexdigest()
+                                        if item_remote['md5Checksum'] == copyfile_checksum:
+                                            list_static.append(check_save_item(item_remote))
+                                            # skip the real DOWNLOAD!
+                                            continue
+                                        else:
+                                            delete_local_trash(cloudFolder + item['name'])
+                                            logging.warning('Restore File (try to download) failed!')
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                delete_local_erase(cloudFolder + item['name'])
+                                logging.warning('Copy File failed!')
+                                return
+                        if item['todo'] == 'DOWNLOAD':
+                            try:
+                                if item['mimeType'] in GOOGLE_MIME_TYPES.keys():
+                                    logging.log(40, 'Download (export): ' + item['name'])
+                                    sendmessage(cloudName + ' (downloading)', 'Export: ' + item['name'])
+                                    request = download_file_export(cloudFolder + item['name'], item_remote['id'])
+                                else:
+                                    logging.log(40, 'Download: ' + item['name'])
+                                    sendmessage(cloudName + ' (downloading)', item['name'])
+                                    request = download_file(cloudFolder + item['name'], item_remote['id'])
+                                if request != None:
+                                    list_static.append(check_save_item(item_remote))
+                                else:
+                                    delete_local_erase(cloudFolder + item['name'])
+                                    logging.warning('Downloading File failed!')
+                                    return
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                delete_local_erase(cloudFolder + item['name'])
+                                logging.warning('Downloading File failed!')
+                                return
+                        if item['todo'] == 'DOWNLOAD_REPLACE':
+                            try:
+                                if item['mimeType'] in GOOGLE_MIME_TYPES.keys():
+                                    logging.log(40, 'Download (export/replace): ' + item['name'])
+                                    sendmessage(cloudName + ' (downloading changes)', 'Export: ' +  item['name'])
+                                    delete_local_trash(sync_time, item['name'])
+                                    request = download_file_export(cloudFolder + item['name'], item_remote['id'])
+                                else:
+                                    logging.log(40, 'Download (replace): ' + item['name'])
+                                    sendmessage(cloudName + ' (downloading changes)', item['name'])
+                                    delete_local_trash(sync_time, item['name'])
+                                    request = download_file(cloudFolder + item['name'], item_remote['id'])
+                                # Try to remove item from list_static
+                                item_old = dict_search_name(list_static, item['name'])
+                                if item_old:
+                                    list_static.remove(item_old)
+                                if request != None:
+                                    list_static.append(check_save_item(item_remote))
+                                else:
+                                    delete_local_erase(cloudFolder + item['name'])
+                                    logging.warning('Downloading File (replace) failed!')
+                                    return
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                delete_local_erase(cloudFolder + item['name'])
+                                logging.warning('Downloading File (replace) failed!')
+                                return
+                        # Dummy UPLOAD, for detect allready uploaded Files
+                        if item['todo'] == 'UPLOAD':
+                            try:
+                                # Try to find a remote File with the same MD5 (allready uploaded?)
+                                item_search_remote = dict_search_checksum(list_remote, item_local['md5Checksum'])
+                                if item_search_remote != None:
+                                    # try to find out if the file is moved?
+                                    item_search_remove = dict_search_name_by_todo(list_todo, item_search_remote['name'], 'REMOVE_REMOTE')
+                                    if item_search_remove != None:
+                                        logging.log(40, 'Move (remote): From "' + item_search_remote['name'] + '" to "' + item['name'] + '"')
+                                        sendmessage(cloudName + ' (remote move/rename file)', item['name'])
+                                        # search for parend dir id
+                                        parent_dir_add = os.path.dirname(item['name'])
+                                        if parent_dir_add == '/':
+                                            parent_add = 'root'
+                                        else:
+                                            parent_add = dict_search_name(list_static, parent_dir_add)['id']
+                                        # search for parend dir id
+                                        parent_dir_remove = os.path.dirname(item_search_remote['name'])
+                                        if parent_dir_remove == '/':
+                                            parend_remove = 'root'
+                                        else:
+                                            parend_remove = dict_search_name(list_static, parent_dir_remove)['id']
+                                        request = remote_move_file(item_search_remote['id'], item['name'], item_local['modifiedEpoch'] , parent_add, parend_remove)
+                                        if request != None:
+                                            # check request['md5Checksum'] !!!
+                                            item['id'] = request['id']
+                                            item['mimeType'] = request['mimeType']
+                                            item['modifiedEpoch'] = item_local['modifiedEpoch']
+                                            item['md5Checksum'] = item_local['md5Checksum']
+                                            # remove later item_search_remove from list_todo
+                                            remove_todo_files.append(item_search_remove)
+                                            list_static.remove(dict_search_name(list_static, item_search_remove['name']))
+                                            list_static.append(check_save_item(item))
+                                            # skip the real UPLOAD!
+                                            continue
+                                        else:
+                                            logging.warning('Remote move File (try to upload) failed!')
+                                    else:
+                                        logging.log(40, 'Copy (remote): From "' + item_search_remote['name'] + '" to "' + item['name'] + '"')
+                                        sendmessage(cloudName + ' (remote copy file)', item['name'])
+                                        # search for parend dir id
+                                        parent_dir = os.path.dirname(item['name'])
+                                        if parent_dir == '/':
+                                            parent_id = 'root'
+                                        else:
+                                            parent_id = dict_search_name(list_static, parent_dir)['id']
+                                        request = remote_copy_file(item_search_remote['id'], item['name'], parent_id)
+                                        if request != None:
+                                            # check request['md5Checksum'] !!!
+                                            item['id'] = request['id']
+                                            item['mimeType'] = request['mimeType']
+                                            item['modifiedEpoch'] = item_local['modifiedEpoch']
+                                            item['md5Checksum'] = item_local['md5Checksum']
+                                            list_static.append(check_save_item(item))
+                                            # skip the real UPLOAD!
+                                            continue
+                                        else:
+                                            logging.warning('Remote copy File (try to upload) failed!')
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                logging.warning('Remote copy File failed!')
+                                return
+                        if item['todo'] == 'UPLOAD':
+                            try:
+                                logging.log(40, 'Upload: ' + item['name'])
+                                sendmessage(cloudName + ' (uploading)', item['name'])
+                                # search for parend dir id
+                                parent_dir = os.path.dirname(item['name'])
+                                if parent_dir == '/':
+                                    parent_id = 'root'
+                                else:
+                                    parent_id = dict_search_name(list_static, parent_dir)['id']
+                                request = upload_file(cloudFolder + item['name'], parent_id)
+                                if request != None:
+                                    item['id'] = request['id']
+                                    item['mimeType'] = request['mimeType']
+                                    item['modifiedEpoch'] = item_local['modifiedEpoch']
+                                    item['md5Checksum'] = item_local['md5Checksum']
+                                    list_static.append(check_save_item(item))
+                                else:
+                                    logging.warning('Uploading File failed!')
+                                    return
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                logging.warning('Uploading File failed!')
+                                return
+                        if item['todo'] == 'UPLOAD_REPLACE':
+                            try:
+                                logging.log(40, 'Upload (replace): ' + item['name'])
+                                sendmessage(cloudName + ' (uploading changes)', item['name'])
+                                request = upload_file_replace(cloudFolder + item['name'], item['id'])
+                                if request != None:
+                                    item['modifiedEpoch'] = item_local['modifiedEpoch']
+                                    item['md5Checksum'] = item_local['md5Checksum']
+                                    list_static.remove(dict_search_name(list_static, item['name']))
+                                    list_static.append(check_save_item(item))
+                                else:
+                                    list_static.remove(dict_search_name(list_static, item['name']))
+                                    logging.warning('Uploading File (replace) failed!')
+                                    return
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                logging.warning('Uploading File (replace) failed!')
+                                return
+                # Search for unnessesary todo's (in to remove Folders)
+                items_remove = []
+                for item in list_todo:
+                    if item.get('mimeType') == 'application/vnd.google-apps.folder':
+                        if item['todo'] == 'REMOVE_REMOTE' or item['todo'] == 'REMOVE_LOCAL':
+                            items_remove.extend([i for i in list_todo if i['name'].startswith(item['name'] + '/')])
+                list_todo_folder = [i for i in list_todo if i not in items_remove]
+                # at the end, run all todo's for Folders (only remove!)
+                for item in list_todo_folder:
+                    if item.get('mimeType') == 'application/vnd.google-apps.folder':
+                        if item['todo'] == 'REMOVE_REMOTE':
+                            try:
+                                logging.log(40, 'Trash (remote/folder): ' + item['name'])
+                                sendmessage(cloudName + ' (trash remote Folder)', item['name'])
+                                delete_remote_trash(item['id'])
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                logging.warning('Remove remote Folder failed!')
+                                return
+                        if item['todo'] == 'REMOVE_LOCAL':
+                            try:
+                                logging.log(40, 'Trash (local/folder): ' + item['name'])
+                                sendmessage(cloudName + ' (trash local Folder)', item['name'])
+                                delete_local_trash(sync_time, item['name'])
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                logging.warning('Remove local Folder failed!')
+                                return
+                        if item['todo'] == 'REMOVE_LOCAL' or item['todo'] == 'REMOVE_REMOTE':
+                            # remove recursive all files and folders in list_static and items_todo for the item name
+                            list_static.remove(dict_search_name(list_static, item['name']))
+                            remove_todo_files.extend([i for i in list_todo if i['name'].startswith(item['name'] + '/')])
+                            list_static_remove = [i for i in list_static if i['name'].startswith(item['name'] + '/')]
+                            list_static_tmp = [i for i in list_static if i not in list_static_remove]
+                            list_static = list_static_tmp
+                # prepare list_todo for remove files
+                list_todo_tmp = [i for i in list_todo if i not in remove_todo_files]
+                list_todo = list_todo_tmp
+                # at the end, run all todo's for Files (only remove!)
+                for item in list_todo:
+                    if item.get('mimeType') != 'application/vnd.google-apps.folder':
+                        if item['todo'] == 'REMOVE_REMOTE':
+                            try:
+                                if item['mimeType'] in GOOGLE_MIME_TYPES.keys():
+                                    logging.log(40, 'Trash (remote/export): ' +  item['name'])
+                                    sendmessage(cloudName + ' (trash remote File)', 'Export: ' + item['name'])
+                                else:
+                                    logging.log(40, 'Trash (remote/file): ' + item['name'])
+                                    sendmessage(cloudName + ' (trash remote File)', item['name'])
+                                request = delete_remote_trash(item['id'])
+                                if request != None:
+                                    list_static.remove(dict_search_name(list_static, item['name']))
+                                else:
+                                    logging.warning('Remove remote File failed!')
+                                    return
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                logging.warning('Remove remote File failed!')
+                                return
+                        if item['todo'] == 'REMOVE_LOCAL':
+                            try:
+                                if item['mimeType'] in GOOGLE_MIME_TYPES.keys():
+                                    logging.log(40, 'Trash (local/export): ' + item['name'])
+                                    sendmessage(cloudName + ' (trash local File)', 'Export: ' + item['name'])
+                                else:
+                                    logging.log(40, 'Trash (local/file): ' + item['name'])
+                                    sendmessage(cloudName + ' (trash local File)', item['name'])
+                                delete_local_trash(sync_time, item['name'])
+                                list_static.remove(dict_search_name(list_static, item['name']))
+                            except Exception:
+                                debugPrint(traceback.format_exc())
+                                logging.warning('Remove local File failed!')
+                                return
+            else:
+                update_cloud_info()
+                run_loop = False
+            # cleanup list_static
+            list_static_remove = [i for i in list_static if dict_search_name(list_remote, i['name']) == None and dict_search_name(list_local, i['name']) == None]
+            if list_static_remove:
+                logging.debug('Handle DB Error, remove items from DB that not local or remote exsist...')
+                list_static_new = [i for i in list_static if i not in list_static_remove]
+                list_static = list_static_new
+            # check if you get changes, while sync
+            list_remote_tmp = get_tree_list_remote()
+            list_local_tmp = get_tree_list_local()
+            if len(list_static) == len(list_remote_tmp) and len(list_static) == len(list_local_tmp):
+                update_cloud_info()
+                run_loop = False
+            else:
+                logging.debug('Sync again, get some changes...')
+                time.sleep(5)
+        except Exception:
+            debugPrint(traceback.format_exc())
+            logging.warning('Loop is failed!')
+            sendmessage(cloudName + ' (synchronizing)', 'Failed, are you offline?...')
+            # reset cloudService
+            logging.debug('Reset cloudService (delay)...')
+            cloudServiceSetup = False
+            timerServiceSetup = 0
+            return
+    try:
+        if list_static != read_items_json_file(cloudStatusFile):
+            logging.debug('Save Status File...')
+            write_items_json_file(list_static, cloudStatusFile)
+    except:
+        logging.warning('Failed to save Status File...')
+        sendmessage(cloudName + ' (synchronizing)', 'Failed to save Status File...')
+        return
+    logging.debug('Finished Sync...')
+    threadExitCodeSync = True
+
+def poll_detect_changes():
+    # check last thread
+    if not check_running_thread('polling'):
+        # run remote Polling as thread
+        t = threading.Thread(name='polling', target=poll_detect_changes_thread)
+        t.start()
+    return True
+
+def poll_detect_changes_thread():
+    global start_page_token
+    try:
+        # check threads
+        if check_running_thread('sync') or check_running_thread('init'):
+            logging.debug('Delay remote Polling...')
+            # Try it next Time...
+            return
+        # check cloudService
+        if cloudServiceSetup == False:
+            # run setup_google_service
+            setup_google_service()
+            return
+        # get start_page_token
+        if start_page_token == None:
+            logging.debug('Start remote Polling...')
+            start_page_token = cloudService.changes().getStartPageToken().execute().get('startPageToken')
+        # check start_page_token
+        if start_page_token == None:
+            logging.debug('Polling (no start_page_token), try to restart...')
+            # reset cloudService
+            setup_google_service()
+            return
+        # run detect_changes
+        logging.debug('Sync remote Polling...')
+        start_page_token = detect_changes(start_page_token, cloudFolder)
+    except:
+        # Try to Sync, to get missings Sync Status?
+        logging.debug('Failed remote Polling (try to Sync)...')
+        syncNow('start')
+
+def detect_changes(saved_start_page_token, foldername):
+    # Polling Mode
+    page_token = saved_start_page_token
+    while page_token is not None:
+        response = cloudService.changes().list(pageToken=page_token, spaces='drive').execute()
+        detect_changes = False
+        for change in response.get('changes'):
+            if change.get('file'):
+                detect_changes = True
+        if detect_changes == True:
+            logging.debug('Sync for remote changes...')
+            sendmessage(cloudName + ' (detect remote changes)', 'Sync very soon...')
+            eventLoop()
+        if 'newStartPageToken' in response:
+            # Last page, save this token for the next polling interval
+            saved_start_page_token = response.get('newStartPageToken')
+        page_token = response.get('nextPageToken')
+    if saved_start_page_token:
+        return saved_start_page_token
+    return None
+
+def quitApplication(widget):
+    # fast unclean exit
+    notifier.stop()
+    logging.debug('Quit')
+    os._exit(0)
+
+def sendmessage(title, message):
+    if gsettings_app.get_boolean("notifications") is True:
+      subprocess.Popen(['notify-send', '--hint=int:transient:1', '-i', icon_path_grive, title, message])
+    return
+
+def get_local_trash_space():
+    try:
+        if not os.path.isdir(cloudTrashFolder):
+            os.mkdir(cloudTrashFolder)
+        size = folderSize(cloudTrashFolder)
+        if size == 4096:
+            return ('Empty!')
+        else:
+            return humanbytes(size)
+    except:
+        return ('Empty!')
+
+def folderSize(foldername):
+    p1 = subprocess.Popen(['du', '-sb', foldername], stdout=subprocess.PIPE)
+    p2 = subprocess.Popen(['cut', '-f1'], stdin=p1.stdout, stdout=subprocess.PIPE)
+    p1.stdout.close()  # Allow p1 to receive a SIGPIPE if p2 exits.
+    output = int(p2.communicate()[0])
+    logging.debug('Folder Size:  %d' % output)
+    return output
+
+def delaySync():
+    global timerDelay
+    tempTimer = timerDelay
+    if check_running_thread('sync'):
+        # Sync thread is running, stop timerDelay
+        timerDelay = 0
+        return False
+    tempSize = folderSize(cloudFolder)
+    time.sleep(5) # frezze python
+    if tempSize != folderSize(cloudFolder):
+        # Try it next Time, folder size changed
+        logging.debug('Waiting...')
+        return True
+    if tempTimer != timerDelay:
+        # Try it next Time, new Timer was added
+        logging.debug('Waiting...')
+        return True
+    if check_running_thread('sync'):
+        # Sync thread is running, stop timerDelay
+        timerDelay = 0
+        return False
+    logging.debug('No more disc activity detected, Sync Now.')
+    syncNow('start')
+    # Stop timerDelay
+    timerDelay = 0
+    return False
+
+def eventLoop():
+    # Get fired on all events
+    global timerDelay
+    global timerPolling
+    # Remove old Sync request
+    if timerDelay != 0:
+        logging.debug('Remove Delay Timer...')
+        GLib.source_remove(timerDelay)
+    else:
+        # trigger faster remote polling, if AutoSyncState is enable
+        if AutoSyncState == True:
+            logging.debug('Setup faster remote Polling Timer...')
+            if timerPolling != 0:
+                GLib.source_remove(timerPolling)
+            timerPolling = GLib.timeout_add_seconds(5, poll_detect_changes)
+    # Delay Sync for big Files Moves
+    logging.debug('Add Sync request...')
+    timerDelay = GLib.timeout_add_seconds(delaySyncSec, delaySync)
+
+def autoSync(optionName):
+    global AutoSyncState
+    global start_page_token
+    global timerPolling
+    if optionName=='start':
+        # enable AutoSyncState
+        AutoSyncState = True
+        # reset "poll_detect_changes"
+        start_page_token = None
+        timerPolling = GLib.timeout_add_seconds(remotePollingSec, poll_detect_changes)
+        poll_detect_changes()
+    if optionName == 'stop':
+        # disable AutoSyncState
+        AutoSyncState = False
+        if timerPolling != 0:
+            logging.debug('Remove Polling Timer...')
+            GLib.source_remove(timerPolling)
+            timerPolling = 0
+
+def syncNow(widget):
+    global timerWorker
+    autoSync('stop')
+    # check cloudService
+    if cloudServiceSetup == False:
+        setup_google_service()
+        # Delay Sync
+        eventLoop()
+        return
+    try:
+        update_cloud_info()
+    except:
+        # get a new cloudService
+        logging.debug('Reset cloudService...')
+        setup_google_service()
+        # Delay Sync
+        eventLoop()
+        return
+    # wait for all threads to exit
+    logging.debug('Wait for all Threads...')
+    join_running_thread('sync')
+    join_running_thread('init')
+    join_running_thread('polling')
+    logging.debug('Now Sync...')
+    t = threading.Thread(name='sync', target=syncThread)
+    t.start()
+    menu_sync_now.set_sensitive(False)
+    ind.set_icon_full(icon_path_sync, 'sync')
+    timerWorker = GLib.timeout_add_seconds(3, runWorker)
+
+def runWorker():
+    global timerWorker
+    if not check_running_thread('sync'):
+        if threadExitCodeSync == True:
+            menu_last_sync.set_label('Last Sync: %s' % datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            ind.set_icon_full(icon_path, 'finished')
+            if gsettings_app.get_boolean('autosync'):
+                autoSync('start')
+        else:
+            sendmessage(cloudName + ' (synchronizing)', 'Failed!')
+            ind.set_icon_full(icon_path_failed, 'failed')
+        menu_sync_now.set_sensitive(True)
+        # Stop timerWorker
+        timerWorker = 0
+        return False
+    return True
+
+def toggleAutoSync(widget):
+    global icon_path
+    if widget.get_active():
+      autoSync('start')
+      icon_path = icon_path_active
+      ind.set_icon_full(icon_path, 'start')
+      # sync at first startup
+      eventLoop()
+    else:
+      autoSync('stop')
+      icon_path = icon_path_standby
+      ind.set_icon_full(icon_path, 'stop')
+
+def toggleAutoStart(widget):
+    if widget.get_active():
+      try:
+        if not os.path.exists(autoStartDestinationFolder):
+          logging.debug('Create Folder: ' + autoStartDestinationFolder)
+          os.makedirs(autoStartDestinationFolder)
+        shutil.copy (autoStartSourceFile, autoStartDestinationFile)
+      except:
+        logging.warning('File Copy Error from ' + autoStartSourceFile + " to " + autoStartDestinationFile )
+      sendmessage(cloudName, 'Autostart ON')
+    else:
+      try:
+        if os.path.isfile(autoStartDestinationFile):
+          os.remove(autoStartDestinationFile)
+      except:
+        logging.warning('File Delete Error for: ' + autoStartDestinationFile )
+      sendmessage(cloudName, 'Autostart OFF')
+
+def openGdrive(widget):
+    try:
+      os.startfile(cloudFolder)
+    except:
+      subprocess.Popen(['xdg-open', cloudFolder])
+
+def openHistory(widget):
+    try:
+      os.startfile(cloudHistoryFile)
+    except:
+      subprocess.Popen(['xdg-open', cloudHistoryFile])
+
+def openLocalTrash(button):
+    try:
+      os.startfile(cloudTrashFolder)
+    except:
+      subprocess.Popen(['xdg-open', cloudTrashFolder])
+
+def on_my_setting_changed(gsettings_app, widget, key, check_button):
+    toggleStateSettings = gsettings_app.get_boolean(key)
+    check_button.set_active(toggleStateSettings)
+    # The keys could be checked every time used but below is to save proccessing
+    # use functions to check on update not the whole time
+    if key == 'autosync':
+      # update the main app indicator button state as well as
+      menu_auto_sync.set_active(toggleStateSettings)
+
+def on_check_button_toggled(widget, button, gsettings_app, key):
+    # update dconf gsettings_app
+    gsettings_app.set_boolean(key, button.get_active())
+
+def closeWindow(widget, event, window):
+    # Close window
+    widget.destroy()
+
+def openPreferences(widget):
+    ### GTK Preferences Window
+    global autostart_check_button
+    # Create Prefences window
+    preferencesWindow = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+    preferencesWindow.set_title('Grive - Preferences')
+    preferencesWindow.set_icon(GdkPixbuf.Pixbuf.new_from_file(icon_path_grive))
+    preferencesWindow.set_border_width(24)
+    preferencesWindow.connect('delete-event', closeWindow, preferencesWindow)
+
+    ## Button definitions
+    # Autostart
+    key = 'autostart'
+    autostart_check_button = Gtk.CheckButton(label='Start Grive when you start your computer')
+    if os.path.isfile(autoStartDestinationFile) == True:
+      autostart_check_button.set_active(True)
+    else:
+      autostart_check_button.set_active(False)
+    autostart_check_button.connect("toggled", toggleAutoStart)
+
+    # Auto Sync
+    key = 'autosync'
+    autosync_check_button = Gtk.CheckButton(label='Automatically synchronize ' + cloudName)
+    autosync_check_button.set_active(gsettings_app.get_boolean(key))
+    gsettings_app.connect("changed::autosync", on_my_setting_changed, key, autosync_check_button)
+    autosync_check_button.connect("toggled", on_check_button_toggled, autosync_check_button, gsettings_app, key)
+
+    # Notifications
+    key = 'notifications'
+    notifications_check_button = Gtk.CheckButton(label='Show On Screen Notifications')
+    notifications_check_button.set_active(gsettings_app.get_boolean(key))
+    gsettings_app.connect("changed::notifications", on_my_setting_changed, key, notifications_check_button)
+    notifications_check_button.connect("toggled", on_check_button_toggled, notifications_check_button, gsettings_app, key)
+
+    ## Buttons
+    buttons_hbox = Gtk.Box(spacing=6)
+    ### Local Trash
+    button = Gtk.Button.new_with_label('Open local Trash (' + get_local_trash_space() + ')')
+    button.connect("clicked", openLocalTrash)
+    buttons_hbox.pack_start(button, True, True, 0)
+    ### Remote Trash
+    button = Gtk.Button.new_with_mnemonic('Empty Google Drive Trash')
+    button.connect("clicked", empty_remote_trash)
+    buttons_hbox.pack_start(button, True, True, 0)
+
+    ## Window Grid Layout
+    prefGrid = Gtk.Grid()
+    preferencesWindow.add(prefGrid)
+    prefGrid.add(autostart_check_button)
+    prefGrid.attach_next_to(autosync_check_button, autostart_check_button, Gtk.PositionType.BOTTOM, 1, 1)
+    prefGrid.attach_next_to(notifications_check_button, autosync_check_button, Gtk.PositionType.BOTTOM, 1, 1)
+    prefGrid.attach_next_to(buttons_hbox, notifications_check_button, Gtk.PositionType.BOTTOM, 1, 1)
+    preferencesWindow.show_all()
+
+def renderMenu():
+    global menu
+    global menu_sync_now
+    global menu_last_sync
+    global menu_cloud_info
+    global menu_auto_sync
+
+    # Menu Items
+    menu_sync_now = Gtk.MenuItem(label='Sync Now')
+    menu_sync_now.set_use_underline(True)
+    menu_sync_now.connect("activate", syncNow)
+    menu.append(menu_sync_now)
+
+    menu_cloud_info = Gtk.MenuItem(label='Google Drive Info...')
+    menu_cloud_info.set_sensitive(False)
+    menu.append(menu_cloud_info)
+
+    menu_last_sync = Gtk.MenuItem(label='Last Sync: ------')
+    menu_last_sync.set_sensitive(False)
+    menu.append(menu_last_sync)
+
+    menu.append(Gtk.SeparatorMenuItem.new())
+
+    key = 'autosync'
+    menu_auto_sync = Gtk.CheckMenuItem(label='Auto Sync')
+    menu_auto_sync.connect("activate", toggleAutoSync)
+    gsettings_app.connect("changed::autostart", on_my_setting_changed, key, menu_auto_sync)
+    menu_auto_sync.connect("toggled", on_check_button_toggled, menu_auto_sync, gsettings_app, key)
+    menu_auto_sync.set_active(gsettings_app.get_boolean(key))
+    menu.append(menu_auto_sync)
+
+    menu.append(Gtk.SeparatorMenuItem.new())
+
+    menu_open_gdrive = Gtk.MenuItem(label=cloudName + ' Folder')
+    menu_open_gdrive.set_use_underline(True)
+    menu_open_gdrive.connect("activate", openGdrive)
+    menu.append(menu_open_gdrive)
+
+    menu_open_history = Gtk.MenuItem(label='View sync History')
+    menu_open_history.set_use_underline(True)
+    menu_open_history.connect("activate", openHistory)
+    menu.append(menu_open_history)
+
+    menu_preferences = Gtk.MenuItem(label='Preferences')
+    menu_preferences.set_use_underline(True)
+    menu_preferences.connect("activate", openPreferences)
+    menu.append(menu_preferences)
+
+    menu.append(Gtk.SeparatorMenuItem.new())
+
+    menu_quit = Gtk.MenuItem(label='Quit')
+    menu_quit.connect("activate", quitApplication)
+    menu.append(menu_quit)
+
+    menu.show_all()
+    ind.set_icon_full(icon_path_standby, 'menu')
+    ind.set_menu(menu)
+
+##### Main Loop
+if __name__ == "__main__":
+    # Main Env Vars
+    delaySyncSec = 60
+    remotePollingSec = 300
+    appName = 'grive'
+    installDir = '/usr/share/grive/'
+    userHome = os.getenv("HOME")
+    cloudName = "Google Drive"
+    cloudFolder = os.path.join(userHome, cloudName)
+    cloudTrashFolder = os.path.join(cloudFolder, '.trash')
+    cloudConfigFile = os.path.join(cloudFolder, '.grive-config.json')
+    cloudStatusFile = os.path.join(cloudFolder, '.grive-state.json')
+    cloudHistoryFile = os.path.join(cloudFolder, '.grive-history.log')
+    cloudClientFile = os.path.join(installDir, 'google-client.json')
+    autoStartDestinationFolder = os.path.join(userHome, '.config', 'autostart')
+    autoStartDestinationFile = os.path.join(autoStartDestinationFolder, 'grive.desktop')
+    autoStartSourceFile = os.path.join('/usr/share/applications/grive.desktop')
+
+    # Create lockFile
+    try:
+        lockFile = open('/tmp/' + appName + '.lock','w')
+        fcntl.flock(lockFile, fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except:
+        sys.exit(appName + ' instance already running')
+    lockFile.write('%d\n'%os.getpid())
+    lockFile.flush()
+
+    # Setup gsettings
+    gsettings_app = Gio.Settings.new("apps.grive")
+
+    # Setup logging
+    # https://docs.python.org/3/howto/logging.html
+    try:
+        if gsettings_app.get_boolean("debug") == True:
+            logging.basicConfig(level=logging.DEBUG)
+        else:
+            logging.basicConfig(filename=cloudHistoryFile,level=logging.ERROR,format='%(asctime)s %(message)s',datefmt='%Y-%m-%d %H:%M:%S')
+    except:
+        logging.basicConfig(level=logging.INFO)
+
+    # Create Application Indicator
+    ind = AppIndicator3.Indicator.new(appName, "indicator-messages", AppIndicator3.IndicatorCategory.APPLICATION_STATUS)
+    ind.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+
+    # Placeholder vars
+    start_page_token = None
+    AutoSyncState = False
+    cloudServiceSetup = False
+    threadExitCodeSync = False
+    timerDelay = 0
+    timerWorker = 0
+    timerPolling = 0
+    timerSyncDelay = 0
+    timerServiceSetup = 0
+
+    # Icon Paths
+    icon_path_grive = os.path.join(installDir,'icons', 'app.png')
+    icon_path_active = os.path.join(installDir, 'icons', 'app-ind-active.png')
+    icon_path_failed = os.path.join(installDir, 'icons', 'app-ind-error.png')
+    icon_path_standby = os.path.join(installDir, 'icons', 'app-ind-sleep.png')
+    icon_path_sync = os.path.join(installDir, 'icons', 'app-ind-sync.png')
+    icon_path = icon_path_standby
+
+    # Check Folders and Files
+    if not os.path.isdir(cloudFolder):
+        os.mkdir(cloudFolder)
+    if not os.path.isfile(cloudStatusFile):
+        item = []
+        logging.log(40, 'Info: Create a new DB File...')
+        write_items_json_file(item, cloudStatusFile)
+    os.chmod(cloudStatusFile, 0o600)
+    if os.path.isfile(cloudConfigFile):
+        os.chmod(cloudConfigFile, 0o600)
+
+    # Setup pynotify
+    # https://github.com/seb-m/pyinotify
+    exclude_filter_list = []
+    exclude_filter_list.append(cloudConfigFile)
+    exclude_filter_list.append(cloudStatusFile)
+    exclude_filter_list.append(cloudTrashFolder)
+    wm_exclude_filter = pyinotify.ExcludeFilter(exclude_filter_list)
+    wm = pyinotify.WatchManager()
+    mask = pyinotify.IN_CREATE | pyinotify.IN_DELETE | pyinotify.IN_MODIFY | pyinotify.IN_MOVED_FROM | pyinotify.IN_MOVED_TO
+    watcherGoogleDrive = wm.add_watch(path=cloudFolder, mask=mask, rec=True, auto_add=True, exclude_filter=wm_exclude_filter)
+    logging.debug('Start Watcher: %s' % wm.get_watch(wm.get_wd(cloudFolder)))
+    notifier = pyinotify.ThreadedNotifier(wm, EventHandler())
+    notifier.start()
+
+    # Create Menu
+    menu = Gtk.Menu()
+
+    # Render menu items
+    renderMenu()
+
+    # Start GTK Main
+    Gtk.main()
