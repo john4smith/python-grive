@@ -178,6 +178,8 @@ def setup_google_service():
         logging.debug('Start to set up Service...')
         cloudServiceSetup = False
         timerServiceSetup = GLib.timeout_add_seconds(5, setup_google_service_helper)
+        # trigger it now
+        setup_google_service_helper()
 
 def humanbytes(B):
    # Return the given bytes as a human friendly KB, MB, GB, or TB string
@@ -1104,7 +1106,7 @@ def poll_detect_changes_thread():
     except:
         # Try to Sync, to get missings Sync Status?
         logging.debug('Failed remote Polling (try to Sync)...')
-        syncNow('start')
+        syncNow()
 
 def detect_changes(saved_start_page_token, foldername):
     # Polling Mode
@@ -1180,7 +1182,7 @@ def delaySync():
         timerDelay = 0
         return False
     logging.debug('No more disc activity detected, Sync Now.')
-    syncNow('start')
+    syncNow()
     # Stop timerDelay
     timerDelay = 0
     return False
@@ -1223,15 +1225,23 @@ def autoSync(optionName):
             GLib.source_remove(timerPolling)
             timerPolling = 0
 
-def syncNow(widget):
-    global timerWorker
-    autoSync('stop')
+def syncNowButton(widget):
     # check cloudService
     if cloudServiceSetup == False:
         setup_google_service()
-        # Delay Sync
-        eventLoop()
-        return
+        # Wait for Service
+        run_loop = True
+        while run_loop:
+            if cloudServiceSetup == False:
+                time.sleep(1) # frezze python
+            else:
+                run_loop = False
+    # Try to Sync
+    syncNow()
+
+def syncNow():
+    global timerWorker
+    autoSync('stop')
     try:
         update_cloud_info()
     except:
@@ -1239,7 +1249,7 @@ def syncNow(widget):
         logging.debug('Reset cloudService...')
         setup_google_service()
         # Delay Sync
-        eventLoop()
+        syncNowButton('start')
         return
     # wait for all threads to exit
     logging.debug('Wait for all Threads...')
@@ -1400,7 +1410,7 @@ def renderMenu():
     # Menu Items
     menu_sync_now = Gtk.MenuItem(label='Sync Now')
     menu_sync_now.set_use_underline(True)
-    menu_sync_now.connect("activate", syncNow)
+    menu_sync_now.connect("activate", syncNowButton)
     menu.append(menu_sync_now)
 
     menu_cloud_info = Gtk.MenuItem(label='Google Drive Info...')
