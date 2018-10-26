@@ -158,7 +158,9 @@ def setup_google_service_thread():
 def setup_google_service_helper():
     # icon set up with thread, not working!
     if timerServiceSetup == 0:
-        ind.set_icon_full(icon_path, 'finished')
+        # Try to keep Sync Icon, if you sync now
+        if ind.get_icon() != icon_path_sync:
+            ind.set_icon_full(icon_path, 'finished')
         # Stop timerService
         return False
     # check last thread
@@ -1230,12 +1232,17 @@ def syncNowButton(widget):
     if cloudServiceSetup == False:
         setup_google_service()
         # Wait for Service
-        run_loop = True
-        while run_loop:
-            if cloudServiceSetup == False:
-                time.sleep(1) # frezze python
+        count_loop = 0
+        while True:
+            if cloudServiceSetup == True:
+                break
             else:
-                run_loop = False
+                logging.debug('Wait for Service to Sync...')
+                count_loop += 1
+                time.sleep(1) # frezze python
+            if count_loop == 10:
+                logging.debug('Stop waiting for Service and not Sync!')
+                return
     # Try to Sync
     syncNow()
 
