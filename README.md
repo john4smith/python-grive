@@ -13,7 +13,7 @@ Grive is still in Beta.
 - Bidirectional Sync for Google Drive objects
 - Removed files on the remote side get moved to a directory named ".trash" on the local side
 - Trying to prevent re-downloading and re-uploading after renaming or moving an object
-- Download export supported Google Files as "read only" (after changes at Google, local files will be moved to trash and re-downloaded)
+- Download export supported Google Files as "read only" (after changes, local files will be moved to trash and re-downloaded)
 
 #### Not supported yet:
 - Identical filenames within the same folder (should be avoided!)
