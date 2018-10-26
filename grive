@@ -735,7 +735,7 @@ def syncThread():
                                             item['todo'] = 'UPLOAD_REPLACE'
                                     elif item_remote['modifiedEpoch'] != item_local['modifiedEpoch']:
                                         try:
-                                            logging.log(40, 'Update (local) modified Time: ' + item['name'])
+                                            logging.log(40, 'Update modified Time (local/file): ' + item['name'])
                                             sendmessage(cloudName + ' (update modified Time for File)', item['name'])
                                             os.utime(cloudFolder + item['name'], (item_remote['modifiedEpoch'], item_remote['modifiedEpoch']))
                                         except Exception:
@@ -759,7 +759,7 @@ def syncThread():
                                         # try to find out if the file is moved?
                                         item_search_remove = dict_search_name_by_todo(list_todo, item_search_local['name'], 'REMOVE_LOCAL')
                                         if item_search_remove != None:
-                                            logging.log(40, 'Move (local): From "' + item_search_local['name'] + '" to "' + item['name'] + '"')
+                                            logging.log(40, 'Move (local/file): From "' + item_search_local['name'] + '" to "' + item['name'] + '"')
                                             sendmessage(cloudName + ' (move/rename file)', item['name'])
                                             shutil.move(cloudFolder + item_search_local['name'], cloudFolder + item['name'])
                                             os.utime(cloudFolder + item['name'], (item_remote['modifiedEpoch'], item_remote['modifiedEpoch']))
@@ -775,7 +775,7 @@ def syncThread():
                                                 delete_local_trash(cloudFolder + item['name'])
                                                 logging.warning('Move File (try to download) failed!')
                                         else:
-                                            logging.log(40, 'Copy (local): From "' + item_search_local['name'] + '" to "' + item['name'] + '"')
+                                            logging.log(40, 'Copy (local/file): From "' + item_search_local['name'] + '" to "' + item['name'] + '"')
                                             sendmessage(cloudName + ' (copy file)', item['name'])
                                             shutil.copyfile(cloudFolder + item_search_local['name'], cloudFolder + item['name'])
                                             os.utime(cloudFolder + item['name'], (item_remote['modifiedEpoch'], item_remote['modifiedEpoch']))
@@ -790,7 +790,7 @@ def syncThread():
                                     # Try to find a local File in Trash with the same MD5 (allready downloaded?)
                                     item_search_trash = dict_search_checksum(list_trash, item_remote['md5Checksum'])
                                     if item_search_trash != None:
-                                        logging.log(40, 'Restore: From "' + item_search_trash['name'] + '" to "' + item['name'] + '"')
+                                        logging.log(40, 'Restore (local/file): From "' + item_search_trash['name'] + '" to "' + item['name'] + '"')
                                         sendmessage(cloudName + ' (restore file)', item['name'])
                                         shutil.move(cloudTrashFolder + item_search_trash['name'], cloudFolder + item['name'])
                                         os.utime(cloudFolder + item['name'], (item_remote['modifiedEpoch'], item_remote['modifiedEpoch']))
@@ -810,11 +810,11 @@ def syncThread():
                         if item['todo'] == 'DOWNLOAD':
                             try:
                                 if item['mimeType'] in GOOGLE_MIME_TYPES.keys():
-                                    logging.log(40, 'Download (export): ' + item['name'])
+                                    logging.log(40, 'Download (remote/export): ' + item['name'])
                                     sendmessage(cloudName + ' (downloading)', 'Export: ' + item['name'])
                                     request = download_file_export(cloudFolder + item['name'], item_remote['id'])
                                 else:
-                                    logging.log(40, 'Download: ' + item['name'])
+                                    logging.log(40, 'Download (remote/file): ' + item['name'])
                                     sendmessage(cloudName + ' (downloading)', item['name'])
                                     request = download_file(cloudFolder + item['name'], item_remote['id'])
                                 if request != None:
@@ -831,12 +831,12 @@ def syncThread():
                         if item['todo'] == 'DOWNLOAD_REPLACE':
                             try:
                                 if item['mimeType'] in GOOGLE_MIME_TYPES.keys():
-                                    logging.log(40, 'Download (export/replace): ' + item['name'])
+                                    logging.log(40, 'Download changes (remote/export): ' + item['name'])
                                     sendmessage(cloudName + ' (downloading changes)', 'Export: ' +  item['name'])
                                     delete_local_trash(sync_time, item['name'])
                                     request = download_file_export(cloudFolder + item['name'], item_remote['id'])
                                 else:
-                                    logging.log(40, 'Download (replace): ' + item['name'])
+                                    logging.log(40, 'Download changes (remote/file): ' + item['name'])
                                     sendmessage(cloudName + ' (downloading changes)', item['name'])
                                     delete_local_trash(sync_time, item['name'])
                                     request = download_file(cloudFolder + item['name'], item_remote['id'])
@@ -864,7 +864,7 @@ def syncThread():
                                     # try to find out if the file is moved?
                                     item_search_remove = dict_search_name_by_todo(list_todo, item_search_remote['name'], 'REMOVE_REMOTE')
                                     if item_search_remove != None:
-                                        logging.log(40, 'Move (remote): From "' + item_search_remote['name'] + '" to "' + item['name'] + '"')
+                                        logging.log(40, 'Move (remote/file): From "' + item_search_remote['name'] + '" to "' + item['name'] + '"')
                                         sendmessage(cloudName + ' (remote move/rename file)', item['name'])
                                         # search for parend dir id
                                         parent_dir_add = os.path.dirname(item['name'])
@@ -894,7 +894,7 @@ def syncThread():
                                         else:
                                             logging.warning('Remote move File (try to upload) failed!')
                                     else:
-                                        logging.log(40, 'Copy (remote): From "' + item_search_remote['name'] + '" to "' + item['name'] + '"')
+                                        logging.log(40, 'Copy (remote/file): From "' + item_search_remote['name'] + '" to "' + item['name'] + '"')
                                         sendmessage(cloudName + ' (remote copy file)', item['name'])
                                         # search for parend dir id
                                         parent_dir = os.path.dirname(item['name'])
@@ -920,7 +920,7 @@ def syncThread():
                                 return
                         if item['todo'] == 'UPLOAD':
                             try:
-                                logging.log(40, 'Upload: ' + item['name'])
+                                logging.log(40, 'Upload (local/file): ' + item['name'])
                                 sendmessage(cloudName + ' (uploading)', item['name'])
                                 # search for parend dir id
                                 parent_dir = os.path.dirname(item['name'])
@@ -944,7 +944,7 @@ def syncThread():
                                 return
                         if item['todo'] == 'UPLOAD_REPLACE':
                             try:
-                                logging.log(40, 'Upload (replace): ' + item['name'])
+                                logging.log(40, 'Upload changes (local/file): ' + item['name'])
                                 sendmessage(cloudName + ' (uploading changes)', item['name'])
                                 request = upload_file_replace(cloudFolder + item['name'], item['id'])
                                 if request != None:
