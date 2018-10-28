@@ -369,7 +369,7 @@ def delete_remote_erase(file_id):
     except:
         logging.warning('Delete remote File failed!')
 
-def empty_remote_trash(button):
+def empty_remote_trash():
     try:
         logging.debug('Empty remote Trash...')
         cloudService.files().emptyTrash().execute()
@@ -1349,6 +1349,13 @@ def on_check_button_toggled(widget, button, gsettings_app, key):
     # update dconf gsettings_app
     gsettings_app.set_boolean(key, button.get_active())
 
+def dialogEmptyRemoteTrash(widget):
+    dialog = Gtk.MessageDialog(message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.OK_CANCEL, text="Do you really want to permanently delete all data in the Google Drive Trash?")
+    response = dialog.run()
+    if response == Gtk.ResponseType.OK:
+        empty_remote_trash()
+    dialog.destroy()
+
 def closeWindow(widget, event, window):
     # Close window
     widget.destroy()
@@ -1395,7 +1402,7 @@ def openPreferences(widget):
     buttons_hbox.pack_start(button, True, True, 0)
     ### Remote Trash
     button = Gtk.Button.new_with_mnemonic('Empty Google Drive Trash')
-    button.connect("clicked", empty_remote_trash)
+    button.connect("clicked", dialogEmptyRemoteTrash)
     buttons_hbox.pack_start(button, True, True, 0)
 
     ## Window Grid Layout
