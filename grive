@@ -1352,6 +1352,25 @@ def on_check_button_toggled(widget, button, gsettings_app, key):
     # update dconf gsettings_app
     gsettings_app.set_boolean(key, button.get_active())
 
+def check_files_and_folder():
+    if not os.path.isdir(cloudFolder):
+        os.mkdir(cloudFolder)
+    if not os.path.isfile(cloudStatusFile):
+        item = []
+        logging.log(40, 'Info: Create a new DB File...')
+        write_items_json_file(item, cloudStatusFile)
+    os.chmod(cloudStatusFile, 0o600)
+    if os.path.isfile(cloudConfigFile):
+        os.chmod(cloudConfigFile, 0o600)
+    if not os.path.isfile(cloudClientFileUser) and not os.path.isfile(cloudClientFileSystem):
+        logging.debug('Setup Google API for current User')
+        webbrowser.open('https://console.developers.google.com/')
+        item = {}
+        item['client_id'] = dialogGetGoogleAPI('Client ID')
+        item['client_secret'] = dialogGetGoogleAPI('Client Secret')
+        write_items_json_file(item, cloudClientFileUser)
+        os.chmod(cloudClientFileUser, 0o600)
+
 def dialogGetGoogleAPI(label):
     dialog = Gtk.MessageDialog(message_type=Gtk.MessageType.INFO, modal=True, buttons=Gtk.ButtonsType.OK_CANCEL)
     dialog.set_title('Google Drive API Setup Required')
@@ -1562,24 +1581,8 @@ if __name__ == "__main__":
     icon_path_sync = os.path.join(installDir, 'icons', 'app-ind-sync.png')
     icon_path = icon_path_standby
 
-    # Check Folders and Files
-    if not os.path.isdir(cloudFolder):
-        os.mkdir(cloudFolder)
-    if not os.path.isfile(cloudStatusFile):
-        item = []
-        logging.log(40, 'Info: Create a new DB File...')
-        write_items_json_file(item, cloudStatusFile)
-    os.chmod(cloudStatusFile, 0o600)
-    if os.path.isfile(cloudConfigFile):
-        os.chmod(cloudConfigFile, 0o600)
-    if not os.path.isfile(cloudClientFileUser) and not os.path.isfile(cloudClientFileSystem):
-        # setup Google API for current User
-        webbrowser.open('https://console.developers.google.com/')
-        item = {}
-        item['client_id'] = dialogGetGoogleAPI('Client ID')
-        item['client_secret'] = dialogGetGoogleAPI('Client Secret')
-        write_items_json_file(item, cloudClientFileUser)
-        os.chmod(cloudClientFileUser, 0o600)
+    # Check Files and Folders
+    check_files_and_folder()
 
     # Setup pynotify
     # https://github.com/seb-m/pyinotify
