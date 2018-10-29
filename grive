@@ -17,7 +17,7 @@
 # with this program.  If not, see <http://www.gnu.org/licenses/>.
 ### END LICENSE
 
-import logging, gi, os, io, sys, threading, subprocess, shutil, time, datetime, pyinotify, fcntl, json, re, hashlib, traceback
+import logging, gi, os, io, sys, threading, subprocess, shutil, time, datetime, pyinotify, fcntl, json, re, hashlib, traceback, webbrowser
 gi.require_version('Gtk', '3.0')
 gi.require_version('AppIndicator3', '0.1')
 from gi.repository import Gtk, Gio, GLib, AppIndicator3, GdkPixbuf
@@ -136,7 +136,10 @@ def setup_google_service_thread():
     global cloudServiceSetup
     global timerServiceSetup
     try:
-        cloudService = GoogleCredentials(cloudConfigFile, cloudClientFile).get_service()
+        if os.path.isfile(cloudClientFileUser):
+            cloudService = GoogleCredentials(cloudConfigFile, cloudClientFileUser).get_service()
+        else:
+            cloudService = GoogleCredentials(cloudConfigFile, cloudClientFileSystem).get_service()
         update_cloud_info()
         cloudServiceSetup = True
         # Stop timerService
@@ -1349,8 +1352,30 @@ def on_check_button_toggled(widget, button, gsettings_app, key):
     # update dconf gsettings_app
     gsettings_app.set_boolean(key, button.get_active())
 
+def dialogGetGoogleAPI(label):
+    dialog = Gtk.MessageDialog(message_type=Gtk.MessageType.INFO, modal=True, buttons=Gtk.ButtonsType.OK_CANCEL)
+    dialog.set_title('Google Drive API Setup Required')
+    dialog.format_secondary_text('Please Setup the Google Drive API for Grive in your Browser!')
+    dialog.set_default_size(600, 10)
+    entry = Gtk.Entry()
+    hbox = Gtk.Box(spacing=6)
+    hbox.pack_start(Gtk.Label(label=label + ': '), False, 5, 5)
+    hbox.pack_end(entry, True, True, 0)
+    dialog.vbox.pack_end(hbox, True, True, 0)
+    dialog.show_all()
+    response = dialog.run()
+    if response == Gtk.ResponseType.OK:
+      output = entry.get_text()
+    elif response == Gtk.ResponseType.CANCEL:
+      logging.debug('Cancel selected - Quiting')
+      os._exit(0)
+    dialog.destroy()
+    return (output)
+
 def dialogEmptyRemoteTrash(widget):
-    dialog = Gtk.MessageDialog(message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.OK_CANCEL, text="Do you really want to permanently delete all data in the Google Drive Trash?")
+    dialog = Gtk.MessageDialog(message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.OK_CANCEL)
+    dialog.set_title('Google Drive Trash')
+    dialog.format_secondary_text('Do you really want to permanently delete all files in the Google Drive Trash?')
     response = dialog.run()
     if response == Gtk.ResponseType.OK:
         empty_remote_trash()
@@ -1486,7 +1511,8 @@ if __name__ == "__main__":
     cloudConfigFile = os.path.join(cloudFolder, '.grive-config.json')
     cloudStatusFile = os.path.join(cloudFolder, '.grive-state.json')
     cloudHistoryFile = os.path.join(cloudFolder, '.grive-history.log')
-    cloudClientFile = os.path.join(installDir, 'google-client.json')
+    cloudClientFileUser = os.path.join(cloudFolder, '.grive-client.json')
+    cloudClientFileSystem = os.path.join(installDir, 'google-client.json')
     autoStartDestinationFolder = os.path.join(userHome, '.config', 'autostart')
     autoStartDestinationFile = os.path.join(autoStartDestinationFolder, 'grive.desktop')
     autoStartSourceFile = os.path.join('/usr/share/applications/grive.desktop')
@@ -1546,12 +1572,22 @@ if __name__ == "__main__":
     os.chmod(cloudStatusFile, 0o600)
     if os.path.isfile(cloudConfigFile):
         os.chmod(cloudConfigFile, 0o600)
+    if not os.path.isfile(cloudClientFileUser) and not os.path.isfile(cloudClientFileSystem):
+        # setup Google API for current User
+        webbrowser.open('https://console.developers.google.com/')
+        item = {}
+        item['client_id'] = dialogGetGoogleAPI('Client ID')
+        item['client_secret'] = dialogGetGoogleAPI('Client Secret')
+        write_items_json_file(item, cloudClientFileUser)
+        os.chmod(cloudClientFileUser, 0o600)
 
     # Setup pynotify
     # https://github.com/seb-m/pyinotify
     exclude_filter_list = []
     exclude_filter_list.append(cloudConfigFile)
     exclude_filter_list.append(cloudStatusFile)
+    exclude_filter_list.append(cloudHistoryFile)
+    exclude_filter_list.append(cloudClientFileUser)
     exclude_filter_list.append(cloudTrashFolder)
     wm_exclude_filter = pyinotify.ExcludeFilter(exclude_filter_list)
     wm = pyinotify.WatchManager()
