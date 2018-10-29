@@ -1,0 +1,7 @@
+Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: python-grive
+Source: https://github.com/john4smith/python-grive
+
+Files: *
+Copyright: Copyright 2018 John Smith
+License: GPL-3
