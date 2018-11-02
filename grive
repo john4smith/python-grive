@@ -351,7 +351,7 @@ def delete_local_trash(time, filename):
             number += 1
             filenameTrash = os.path.join(folderTrashTime + filename + '_' + number)
         else:
-            logging.log(40, 'Trash: Move "' + filenameLocal + '" to "' + filenameTrash  + '"')
+            logging.debug('Trash: Move "' + filenameLocal + '" to "' + filenameTrash  + '"')
             os.rename(filenameLocal, filenameTrash)
             return
 
