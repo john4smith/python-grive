@@ -1,7 +1,7 @@
 # Maintainer: john smith <hidden at mail dot com>
 pkgname="python-grive"
 _pkgname="grive"
-pkgver=0.1
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Grive (Python) for Google-Drive"
 arch=('any')
