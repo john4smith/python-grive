@@ -17,7 +17,7 @@
 # with this program.  If not, see <http://www.gnu.org/licenses/>.
 ### END LICENSE
 
-import logging, gi, os, io, sys, threading, subprocess, shutil, time, datetime, pyinotify, fcntl, json, re, hashlib, traceback, webbrowser
+import logging, gi, os, mimetypes, io, sys, threading, subprocess, shutil, time, datetime, pyinotify, fcntl, json, re, hashlib, traceback, webbrowser
 gi.require_version('Gtk', '3.0')
 gi.require_version('AppIndicator3', '0.1')
 from gi.repository import Gtk, Gio, GLib, AppIndicator3, GdkPixbuf
@@ -35,6 +35,7 @@ from httplib2 import ServerNotFoundError as flow_server_offline
 # https://developers.google.com/drive/api/v3/reference
 # https://developers.google.com/drive/api/v3/mime-types
 # https://developers.google.com/drive/api/v3/manage-downloads
+# https://developers.google.com/drive/api/v3/manage-uploads
 GOOGLE_MIME_TYPES = {
     'application/vnd.google-apps.document': ['application/vnd.oasis.opendocument.text', '.odt'],
     'application/vnd.google-apps.spreadsheet': ['application/x-vnd.oasis.opendocument.spreadsheet', '.ods'],
@@ -155,7 +156,7 @@ def setup_google_service_thread():
         logging.debug('Setup Service failed, are you offline?...')
         cloudServiceSetup = False
     except Exception:
-        debugPrint(traceback.format_exc())
+        logging.debug(traceback.format_exc())
         cloudServiceSetup = False
 
 def setup_google_service_helper():
@@ -387,6 +388,9 @@ def upload_file(filename, parent_id):
     # check if the file is bigger then 5MB (1024*1024*5)
     if os.path.getsize(os.path.join(filename)) >= 5242880:
         media_body = MediaFileUpload(filename=os.path.join(filename), resumable=True)
+    # Fix for small files with no MimeType, must be uploaded with "resumable=True"
+    elif os.path.getsize(os.path.join(filename)) > 0 and mimetypes.MimeTypes().guess_type(os.path.join(filename))[0] == None:
+        media_body = MediaFileUpload(filename=os.path.join(filename), resumable=True)
     else:
         media_body = MediaFileUpload(filename=os.path.join(filename))
     request = cloudService.files().create(body=body, media_body=media_body, fields="name, id, modifiedTime, mimeType, md5Checksum").execute()
@@ -401,6 +405,9 @@ def upload_file_replace(filename, item_id):
     body = {'name': os.path.basename(filename), 'modifiedTime': modifiedTime}
     # check if the file is bigger then 5MB (1024*1024*5)
     if os.path.getsize(os.path.join(filename)) >= 5242880:
+        media_body = MediaFileUpload(filename=os.path.join(filename), resumable=True)
+    # Fix for small files with no MimeType, must be uploaded with "resumable=True"
+    elif os.path.getsize(os.path.join(filename)) > 0 and mimetypes.MimeTypes().guess_type(os.path.join(filename))[0] == None:
         media_body = MediaFileUpload(filename=os.path.join(filename), resumable=True)
     else:
         media_body = MediaFileUpload(filename=os.path.join(filename))
@@ -666,7 +673,7 @@ def syncThread():
                                 item_remote = dict_search_name(list_remote, item['name'])
                                 list_static.append(check_save_item(item_remote))
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 delete_local_trash(sync_time, item['name'])
                                 logging.warning('Create local Dir (replace) failed!')
                                 return
@@ -678,7 +685,7 @@ def syncThread():
                                 item_remote = dict_search_name(list_remote, item['name'])
                                 list_static.append(check_save_item(item_remote))
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 logging.warning('Create local Folder failed!')
                                 return
                         if item['todo'] == 'UPLOAD':
@@ -701,7 +708,7 @@ def syncThread():
                                     logging.warning('Create remote Folder failed!')
                                     return
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 logging.warning('Create remote Folder failed!')
                                 return
                 # first, run all todo's for Files (but remove at the end!)
@@ -742,7 +749,7 @@ def syncThread():
                                             sendmessage(cloudName + ' (update modified Time for File)', item['name'])
                                             os.utime(cloudFolder + item['name'], (item_remote['modifiedEpoch'], item_remote['modifiedEpoch']))
                                         except Exception:
-                                            debugPrint(traceback.format_exc())
+                                            logging.debug(traceback.format_exc())
                                             logging.warning('Update modified Time for File failed!')
                                             return
                             if item['todo'] == 'CHECK_DB_ERROR':
@@ -806,7 +813,7 @@ def syncThread():
                                             delete_local_trash(cloudFolder + item['name'])
                                             logging.warning('Restore File (try to download) failed!')
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 delete_local_erase(cloudFolder + item['name'])
                                 logging.warning('Copy File failed!')
                                 return
@@ -827,7 +834,7 @@ def syncThread():
                                     logging.warning('Downloading File failed!')
                                     return
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 delete_local_erase(cloudFolder + item['name'])
                                 logging.warning('Downloading File failed!')
                                 return
@@ -854,7 +861,7 @@ def syncThread():
                                     logging.warning('Downloading File (replace) failed!')
                                     return
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 delete_local_erase(cloudFolder + item['name'])
                                 logging.warning('Downloading File (replace) failed!')
                                 return
@@ -918,7 +925,7 @@ def syncThread():
                                         else:
                                             logging.warning('Remote copy File (try to upload) failed!')
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 logging.warning('Remote copy File failed!')
                                 return
                         if item['todo'] == 'UPLOAD':
@@ -942,7 +949,7 @@ def syncThread():
                                     logging.warning('Uploading File failed!')
                                     return
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 logging.warning('Uploading File failed!')
                                 return
                         if item['todo'] == 'UPLOAD_REPLACE':
@@ -960,7 +967,7 @@ def syncThread():
                                     logging.warning('Uploading File (replace) failed!')
                                     return
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 logging.warning('Uploading File (replace) failed!')
                                 return
                 # Search for unnessesary todo's (in to remove Folders)
@@ -979,7 +986,7 @@ def syncThread():
                                 sendmessage(cloudName + ' (trash remote Folder)', item['name'])
                                 delete_remote_trash(item['id'])
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 logging.warning('Remove remote Folder failed!')
                                 return
                         if item['todo'] == 'REMOVE_LOCAL':
@@ -988,7 +995,7 @@ def syncThread():
                                 sendmessage(cloudName + ' (trash local Folder)', item['name'])
                                 delete_local_trash(sync_time, item['name'])
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 logging.warning('Remove local Folder failed!')
                                 return
                         if item['todo'] == 'REMOVE_LOCAL' or item['todo'] == 'REMOVE_REMOTE':
@@ -1019,7 +1026,7 @@ def syncThread():
                                     logging.warning('Remove remote File failed!')
                                     return
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 logging.warning('Remove remote File failed!')
                                 return
                         if item['todo'] == 'REMOVE_LOCAL':
@@ -1033,7 +1040,7 @@ def syncThread():
                                 delete_local_trash(sync_time, item['name'])
                                 list_static.remove(dict_search_name(list_static, item['name']))
                             except Exception:
-                                debugPrint(traceback.format_exc())
+                                logging.debug(traceback.format_exc())
                                 logging.warning('Remove local File failed!')
                                 return
             else:
@@ -1055,7 +1062,7 @@ def syncThread():
                 logging.debug('Sync again, get some changes...')
                 time.sleep(5)
         except Exception:
-            debugPrint(traceback.format_exc())
+            logging.debug(traceback.format_exc())
             logging.warning('Loop is failed!')
             sendmessage(cloudName + ' (synchronizing)', 'Failed, are you offline?...')
             # reset cloudService
