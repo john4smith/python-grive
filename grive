@@ -181,7 +181,7 @@ def setup_google_service():
     global cloudServiceSetup
     global timerServiceSetup
     if timerServiceSetup == 0:
-        logging.debug('Start to set up Service...')
+        logging.debug('Start to setup Service...')
         cloudServiceSetup = False
         timerServiceSetup = GLib.timeout_add_seconds(5, setup_google_service_helper)
         # trigger it now
@@ -627,7 +627,6 @@ def check_load_item(item):
 
 def syncThread():
     global cloudServiceSetup
-    global timerServiceSetup
     global threadExitCodeSync
     run_loop = True
     threadExitCodeSync = False
@@ -1068,7 +1067,6 @@ def syncThread():
             # reset cloudService
             logging.debug('Reset cloudService (delay)...')
             cloudServiceSetup = False
-            timerServiceSetup = 0
             return
     try:
         if list_static != read_items_json_file(cloudStatusFile):
@@ -1091,6 +1089,7 @@ def poll_detect_changes():
 
 def poll_detect_changes_thread():
     global start_page_token
+    global cloudServiceSetup
     try:
         # check threads
         if check_running_thread('sync') or check_running_thread('init'):
@@ -1116,9 +1115,15 @@ def poll_detect_changes_thread():
         logging.debug('Sync remote Polling...')
         start_page_token = detect_changes(start_page_token, cloudFolder)
     except:
-        # Try to Sync, to get missings Sync Status?
-        logging.debug('Failed remote Polling (try to Sync)...')
-        syncNow()
+        if lostPollingSync == True:
+            # Try to Sync, to get missings Sync Status?
+            logging.debug('Failed remote Polling (try to Sync)...')
+            syncNow()
+        else:
+            # reset cloudService
+            logging.debug('Failed remote Polling (reset)...')
+            cloudServiceSetup = False
+            return
 
 def detect_changes(saved_start_page_token, foldername):
     # Polling Mode
@@ -1526,8 +1531,6 @@ def renderMenu():
 ##### Main Loop
 if __name__ == "__main__":
     # Main Env Vars
-    delaySyncSec = 60
-    remotePollingSec = 300
     appName = 'grive'
     installDir = '/usr/share/grive/'
     userHome = os.getenv("HOME")
@@ -1564,6 +1567,11 @@ if __name__ == "__main__":
             logging.basicConfig(filename=cloudHistoryFile,level=logging.ERROR,format='%(asctime)s %(message)s',datefmt='%Y-%m-%d %H:%M:%S')
     except:
         logging.basicConfig(level=logging.INFO)
+
+    # Setup Vars from gsettings
+    delaySyncSec = gsettings_app.get_int("delay-sync-sec")
+    remotePollingSec = gsettings_app.get_int("remote-polling-sec")
+    lostPollingSync = gsettings_app.get_boolean("lost-polling-sync")
 
     # Create Application Indicator
     ind = AppIndicator3.Indicator.new(appName, "indicator-messages", AppIndicator3.IndicatorCategory.APPLICATION_STATUS)

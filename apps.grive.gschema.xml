@@ -1,20 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
   <schema id="apps.grive" path="/apps/grive/">
-    <key type="b" name="autosync">
+    <key name="autosync" type="b">
       <default>true</default>
-      <summary>Auto Sync Google Drive</summary>
-      <description>Auto synchronize new content in your local Google Drive folder to Google Drive online.</description>
     </key>
-    <key type="b" name="notifications">
+    <key name="notifications" type="b">
       <default>true</default>
-      <summary>Grive Desktop Notifications</summary>
-      <description>Show or Hide all desktop notifications.</description>
     </key>
-    <key type="b" name="debug">
+    <key name="debug" type="b">
       <default>false</default>
-      <summary>Debug Mode</summary>
-      <description>Show or Hide all debug messages.</description>
+    </key>
+    <key name="lost-polling-sync" type="b">
+      <default>false</default>
+    </key>
+    <key name="delay-sync-sec" type="i">
+      <default>60</default>
+    </key>
+    <key name="remote-polling-sec" type="i">
+      <default>300</default>
     </key>
   </schema>
 </schemalist>
