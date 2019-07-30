@@ -1305,15 +1305,19 @@ def runWorker():
 def toggleAutoSync(widget):
     global icon_path
     if widget.get_active():
-      autoSync('start')
-      icon_path = icon_path_active
-      ind.set_icon_full(icon_path, 'start')
-      # sync at first startup
-      eventLoop()
+        autoSync('start')
+        icon_path = icon_path_active
+        if check_running_thread('sync') is False:
+            # Sync thread is not running, set icon
+            ind.set_icon_full(icon_path, 'start')
+            # sync at first startup
+            eventLoop()
     else:
-      autoSync('stop')
-      icon_path = icon_path_standby
-      ind.set_icon_full(icon_path, 'stop')
+        autoSync('stop')
+        icon_path = icon_path_standby
+        if check_running_thread('sync') is False:
+            # Sync thread is not running, set icon
+            ind.set_icon_full(icon_path, 'stop')
 
 def toggleAutoStart(widget):
     if widget.get_active():
