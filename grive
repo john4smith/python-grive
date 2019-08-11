@@ -212,7 +212,8 @@ def valid_filename(filename):
                     filename.startswith('@'),    # temporary file
                     filename.endswith('~'),      # temporary file
                     filename.endswith('.pyc'),   # generated Python file
-                    filename.endswith('.pyo')))  # generated Python file
+                    filename.endswith('.pyo'),   # generated Python file
+                    filename.endswith('.bkup'))) # Cryptomator Backup file
 
 def valid_fullpath(fullname):
     for name in fullname.split('/'):
