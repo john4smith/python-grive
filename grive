@@ -224,34 +224,35 @@ def valid_fullpath(fullname):
 def walk_tree_list_remote(items, parent_id, name):
     global tree_list
     for item in items:
-        if item['parents'][0] == parent_id:
-            if valid_filename(item['name']):
-                item_tmp = {}
-                item_tmp['id'] = item['id']
-                item_tmp['mimeType'] = item['mimeType']
-                item_tmp['parent'] = parent_id
-                # fix name for exporting media
-                if item['mimeType'] in GOOGLE_MIME_TYPES.keys():
-                    item_tmp['name'] = name + item['name'] + GOOGLE_MIME_TYPES[item['mimeType']][1]
-                else:
-                    item_tmp['name'] = name + item['name']
-                # check for dubbel names
-                if dict_search_name(tree_list, item_tmp['name']) == None:
-                    if item['mimeType'] == 'application/vnd.google-apps.folder': # if folder
-                        tree_list.append(item_tmp)
-                        walk_tree_list_remote(items, item['id'], item_tmp['name'] + '/')
-                    elif not item['mimeType'].startswith('application/vnd.google-apps.'):
-                        item_tmp['md5Checksum'] = item['md5Checksum']
-                        item_tmp['modifiedEpoch'] = time.mktime(time.strptime(item['modifiedTime'], '%Y-%m-%dT%H:%M:%S.%fZ'))
-                        tree_list.append(item_tmp)
-                    elif item['mimeType'] in GOOGLE_MIME_TYPES.keys():
-                        item_tmp['modifiedEpoch'] = time.mktime(time.strptime(item['modifiedTime'], '%Y-%m-%dT%H:%M:%S.%fZ'))
-                        tree_list.append(item_tmp)
+        if 'parents' in item:
+            if item['parents'][0] == parent_id:
+                if valid_filename(item['name']):
+                    item_tmp = {}
+                    item_tmp['id'] = item['id']
+                    item_tmp['mimeType'] = item['mimeType']
+                    item_tmp['parent'] = parent_id
+                    # fix name for exporting media
+                    if item['mimeType'] in GOOGLE_MIME_TYPES.keys():
+                        item_tmp['name'] = name + item['name'] + GOOGLE_MIME_TYPES[item['mimeType']][1]
                     else:
-                        logging.debug('Skip unsupported Google File...')
-                else:
-                    logging.debug('Skipp dubbel adding item "' + item_tmp['name'] + '" to remote List...')
-                    sendmessage(cloudName + ' (WARNING, DUBBELD ITEM!)', 'Skipping: ' + item_tmp['name'])
+                        item_tmp['name'] = name + item['name']
+                    # check for dubbel names
+                    if dict_search_name(tree_list, item_tmp['name']) == None:
+                        if item['mimeType'] == 'application/vnd.google-apps.folder': # if folder
+                            tree_list.append(item_tmp)
+                            walk_tree_list_remote(items, item['id'], item_tmp['name'] + '/')
+                        elif not item['mimeType'].startswith('application/vnd.google-apps.'):
+                            item_tmp['md5Checksum'] = item['md5Checksum']
+                            item_tmp['modifiedEpoch'] = time.mktime(time.strptime(item['modifiedTime'], '%Y-%m-%dT%H:%M:%S.%fZ'))
+                            tree_list.append(item_tmp)
+                        elif item['mimeType'] in GOOGLE_MIME_TYPES.keys():
+                            item_tmp['modifiedEpoch'] = time.mktime(time.strptime(item['modifiedTime'], '%Y-%m-%dT%H:%M:%S.%fZ'))
+                            tree_list.append(item_tmp)
+                        else:
+                            logging.debug('Skip unsupported Google File...')
+                    else:
+                        logging.debug('Skipp dubbel adding item "' + item_tmp['name'] + '" to remote List...')
+                        sendmessage(cloudName + ' (WARNING, DUBBELD ITEM!)', 'Skipping: ' + item_tmp['name'])
 
 def get_tree_list_remote():
     global tree_list
@@ -719,7 +720,6 @@ def syncThread():
                         if item.get('mimeType') in GOOGLE_MIME_TYPES.keys():
                             if item['todo'] == 'CHECK_FILE':
                                 item_static = dict_search_name(list_static, item['name'])
-                                logging.debug('Check (exported) File: ' + item['name'])
                                 if item_remote['id'] != item_static['id']:
                                     item['todo'] = 'DOWNLOAD_REPLACE'
                                 if item_remote['modifiedEpoch'] != item_local['modifiedEpoch']:
@@ -733,7 +733,6 @@ def syncThread():
                                     list_static.append(check_save_item(item_remote))
                         else:
                             if item['todo'] == 'CHECK_FILE':
-                                logging.debug('Check File: ' + item['name'])
                                 item_static = dict_search_name(list_static, item['name'])
                                 if item_remote['id'] != item_static['id']:
                                     item['todo'] = 'DOWNLOAD_REPLACE'
