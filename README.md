@@ -20,15 +20,6 @@ Grive is still in Beta.
 - Symbolic links
 
 ___
-### Preparation
-#### Get a Google Drive API Client ID and Secret
-- [HowTo for Rclone](https://github.com/Cloudbox/Cloudbox/wiki/Google-Drive-API-Client-ID-and-Client-Secret) (make it for Grive)
-
-#### If you do not want to create one, you may be able to use it from [Grive2](https://github.com/vitalif/grive2) ?
-- [Client ID](https://github.com/vitalif/grive2/blob/cf51167b55246b7f90ad4970d9686637e8bb0beb/grive/src/main.cc#L49)
-- [Client Secret](https://github.com/vitalif/grive2/blob/cf51167b55246b7f90ad4970d9686637e8bb0beb/grive/src/main.cc#L50)
-
-___
 ### Install (for Ubuntu 18.04)
 - Build a deb-File with the [HowTo](/debian/HowTo.md) and install it
 
@@ -38,7 +29,16 @@ ___
 #### Use the [PKGBUILD](https://wiki.archlinux.org/index.php/Makepkg) to make a Package:
 ```
 mkdir -p /tmp/build-$$/; cd /tmp/build-$$/
-echo '{"client_id": "GRIVE_ID", "client_secret": "GRIVE_SECRET"}' > /tmp/build-$$/google-client.json
 curl -o PKGBUILD https://raw.githubusercontent.com/john4smith/python-grive/master/PKGBUILD
 makepkg -d && sudo pacman -U python-grive-*.pkg.tar.xz
 ```
+
+___
+### Google Drive API Credentials
+#### HowTo get a Google Drive API Client ID and Secret
+- [HowTo for Rclone](https://github.com/Cloudbox/Cloudbox/wiki/Google-Drive-API-Client-ID-and-Client-Secret) (make it for Grive)
+
+#### If you do not want to create one, you may be able to use it from [Grive2](https://github.com/vitalif/grive2) ?
+- [Client ID](https://github.com/vitalif/grive2/blob/cf51167b55246b7f90ad4970d9686637e8bb0beb/grive/src/main.cc#L49)
+- [Client Secret](https://github.com/vitalif/grive2/blob/cf51167b55246b7f90ad4970d9686637e8bb0beb/grive/src/main.cc#L50)
+

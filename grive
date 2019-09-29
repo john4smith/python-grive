@@ -137,10 +137,7 @@ def setup_google_service_thread():
     global cloudServiceSetup
     global timerServiceSetup
     try:
-        if os.path.isfile(cloudClientFileUser):
-            cloudService = GoogleCredentials(cloudConfigFile, cloudClientFileUser).get_service()
-        else:
-            cloudService = GoogleCredentials(cloudConfigFile, cloudClientFileSystem).get_service()
+        cloudService = GoogleCredentials(cloudConfigFile, cloudClientFileUser).get_service()
         update_cloud_info()
         cloudServiceSetup = True
         # Stop timerService
@@ -1378,7 +1375,7 @@ def check_files_and_folder():
     os.chmod(cloudStatusFile, 0o600)
     if os.path.isfile(cloudConfigFile):
         os.chmod(cloudConfigFile, 0o600)
-    if not os.path.isfile(cloudClientFileUser) and not os.path.isfile(cloudClientFileSystem):
+    if not os.path.isfile(cloudClientFileUser):
         logging.debug('Setup Google API for current User')
         webbrowser.open('https://console.developers.google.com/')
         item = {}
@@ -1545,7 +1542,6 @@ if __name__ == "__main__":
     cloudStatusFile = os.path.join(cloudFolder, '.grive-state.json')
     cloudHistoryFile = os.path.join(cloudFolder, '.grive-history.log')
     cloudClientFileUser = os.path.join(cloudFolder, '.grive-client.json')
-    cloudClientFileSystem = os.path.join(installDir, 'google-client.json')
     autoStartDestinationFolder = os.path.join(userHome, '.config', 'autostart')
     autoStartDestinationFile = os.path.join(autoStartDestinationFolder, 'grive.desktop')
     autoStartSourceFile = os.path.join('/usr/share/applications/grive.desktop')
