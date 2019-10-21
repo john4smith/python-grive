@@ -9,7 +9,7 @@ url="https://github.com/john4smith/${pkgname}"
 license=('GPL3')
 conflicts=('grive' 'grive-git')
 depends=('python-google-api-python-client' 'python-oauth2client' 'python-pyinotify' 'python-gobject' 'libappindicator-gtk3' 'dconf' 'xdg-utils' 'libnotify')
-optdepends=('gnome-shell-extension-appindicator-git: gnome indicator support'
+optdepends=('gnome-shell-extension-appindicator: gnome indicator support'
             'gnome-shell-extension-topicons-plus: gnome indicator support')
 source=("${pkgname}-${pkgver}.zip::${url}/archive/master.zip")
 sha256sums=('SKIP')
