@@ -25,7 +25,6 @@ ___
 
 ___
 ### Install (for Arch Linux)
-#### Replace GRIVE_ID and GRIVE_SECRET!
 #### Use the [PKGBUILD](https://wiki.archlinux.org/index.php/Makepkg) to make a Package:
 ```
 mkdir -p /tmp/build-$$/; cd /tmp/build-$$/
