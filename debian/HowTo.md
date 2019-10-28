@@ -1,5 +1,4 @@
 # Make a Ubuntu 18.04 Package
-### Replace GRIVE_ID and GRIVE_SECRET!
 #### Run this in your Terminal:
 ```
 wget -O /tmp/python-grive.zip https://github.com/john4smith/python-grive/archive/master.zip
